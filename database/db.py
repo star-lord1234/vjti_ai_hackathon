@@ -6,6 +6,9 @@ from pathlib import Path
 import psycopg
 
 
+VECTOR_DIM = 768
+
+
 class Database:
 
     def __init__(
@@ -35,7 +38,9 @@ class Database:
         self.ensure_schema()
 
     def ensure_schema(self):
-        """Create table / add columns needed for JSON ingest."""
+        """Create table / add columns / indexes needed for JSON ingest and embeddings."""
+
+        self.cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
 
         schema_path = Path(__file__).resolve().parent / "schema.sql"
         self.cur.execute(schema_path.read_text(encoding="utf-8"))
@@ -47,7 +52,24 @@ class Database:
             ADD COLUMN IF NOT EXISTS department TEXT
             """
         )
+
+        # Vector embedding column & HNSW index for Phase 3 semantic search
+        self.cur.execute(
+            f"""
+            ALTER TABLE gr_documents
+            ADD COLUMN IF NOT EXISTS embedding vector({VECTOR_DIM})
+            """
+        )
+
+        self.cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS gr_documents_embedding_hnsw_idx
+            ON gr_documents USING hnsw (embedding vector_cosine_ops)
+            """
+        )
+
         self.conn.commit()
+
 
     def insert_document(self, metadata, commit=True):
         """Upsert one document from normalized metadata + ocr_text."""
@@ -235,6 +257,69 @@ class Database:
         self.cur.execute("SELECT COUNT(*) FROM gr_documents")
         return self.cur.fetchone()[0]
 
+    def get_documents_for_embedding(self, only_missing: bool = True):
+        """Fetch documents needed for generating embeddings."""
+
+        query = """
+        SELECT id, filename, gr_number_canonical, department, subject_mr, ocr_text
+        FROM gr_documents
+        """
+        if only_missing:
+            query += " WHERE embedding IS NULL"
+        query += " ORDER BY id"
+
+        self.cur.execute(query)
+        columns = [desc[0] for desc in self.cur.description]
+        return [dict(zip(columns, row)) for row in self.cur.fetchall()]
+
+    def update_embedding(self, doc_id: int, embedding_val, commit: bool = True):
+        """Update vector embedding for a single document."""
+
+        self.cur.execute(
+            "UPDATE gr_documents SET embedding = %s WHERE id = %s",
+            (str(embedding_val), doc_id),
+        )
+        if commit:
+            self.conn.commit()
+
+    def update_embeddings_batch(self, batch: list, commit: bool = True):
+        """
+        Batch update vector embeddings.
+        batch is a list of tuples: (embedding_str, doc_id)
+        """
+
+        self.cur.executemany(
+            "UPDATE gr_documents SET embedding = %s WHERE id = %s",
+            batch,
+        )
+        if commit:
+            self.conn.commit()
+
+    def search_embeddings(self, query_embedding: str, top_k: int = 20):
+        """
+        Cosine distance nearest-neighbor search using pgvector <=> operator.
+        Returns rows with calculated similarity score (1 - distance).
+        """
+
+        query = """
+        SELECT id, filename, gr_number_canonical, department, gr_date, subject_mr,
+               (embedding <=> %s::vector) AS distance
+        FROM gr_documents
+        WHERE embedding IS NOT NULL
+        ORDER BY distance ASC
+        LIMIT %s
+        """
+        self.cur.execute(query, (str(query_embedding), top_k))
+        columns = [desc[0] for desc in self.cur.description]
+        results = []
+        for row in self.cur.fetchall():
+            item = dict(zip(columns, row))
+            distance = float(item.pop("distance"))
+            item["score"] = 1.0 - distance
+            results.append(item)
+        return results
+
     def close(self):
         self.cur.close()
         self.conn.close()
+

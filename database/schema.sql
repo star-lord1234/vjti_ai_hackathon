@@ -1,3 +1,5 @@
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE IF NOT EXISTS gr_documents(
 
     id BIGSERIAL PRIMARY KEY,
@@ -34,6 +36,9 @@ CREATE TABLE IF NOT EXISTS gr_documents(
 
     ocr_text TEXT,
 
+    embedding vector(768),
+
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 
 );
+

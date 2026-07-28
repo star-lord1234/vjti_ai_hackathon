@@ -77,12 +77,27 @@ vjti/
 │   └── schema.sql           # gr_documents DDL
 ├── graph/
 │   ├── reference_resolver.py
-│   └── neo4j_loader.py
+│   ├── neo4j_loader.py
+│   └── neo4j_query.py       # Read-only Neo4j CITES citation graph reader
+├── embeddings/
+│   ├── embed_text.py        # Text representation builder
+│   ├── embed.py             # Batch embedding generator & Postgres updater
+│   └── search.py            # pgvector semantic search query CLI & API
+├── retrieval/
+│   ├── __init__.py
+│   └── hybrid.py            # Hybrid vector + graph expansion search engine
+├── reasoning/
+│   ├── __init__.py
+│   ├── context_builder.py   # RAG prompt context builder & excerpt manager
+│   ├── models.py            # Pydantic schemas (QueryAnswer, ConflictFinding, etc.)
+│   └── llm_reasoner.py      # LLM reasoning engine & CLI (Q&A, compare, conflict)
+
 ├── maha_grs 2/maha_grs/fulltext/   # OCR .txt inputs (local / not in git)
 ├── metadata/                       # Generated JSON (local / not in git)
 ├── .env.example
 ├── requirements.txt
 └── README.md
+
 ```
 
 ---
@@ -326,3 +341,277 @@ loader.close()
 ## License / data
 
 OCR text and Government Resolutions remain subject to their original publication terms. This repo stores code and schema; large corpora and secrets stay local via `.gitignore`.
+
+---
+
+## Phase 3 — Embeddings & pgvector Semantic Search
+
+Phase 3 introduces vector search capability for PostgreSQL, enabling natural language semantic search across Marathi Government Resolutions.
+
+### 1. Prerequisites & Environment Setup
+
+Ensure `pgvector` PostgreSQL extension is available on your database server (`CREATE EXTENSION IF NOT EXISTS vector;` is executed automatically via `Database.ensure_schema()`).
+
+Add vector configuration variables to your `.env` file:
+
+```bash
+# Embeddings (Phase 3)
+EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-mpnet-base-v2
+EMBEDDING_BATCH_SIZE=32
+```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-mpnet-base-v2` | Multilingual SentenceTransformer model suitable for Marathi legal text (768-dim) |
+| `EMBEDDING_BATCH_SIZE` | `32` | Batch size for model inference and Postgres updates |
+| `EMBEDDING_MAX_OCR_CHARS` | `500` | Truncated prefix length of `ocr_text` included in embedding text |
+
+### 2. Generating Embeddings
+
+Run the batch embedding generator:
+
+```bash
+python -m embeddings.embed
+```
+
+- Pulls documents from PostgreSQL where `embedding IS NULL` (resumable / idempotent).
+- Constructs compact text representations via `build_embedding_text()` (`subject_mr` + `department` + `gr_number_canonical` + truncated `ocr_text`).
+- Generates 768-dimensional embeddings and updates `gr_documents.embedding`.
+- Displays progress via `tqdm` progress bars.
+
+### 3. Querying via Semantic Search
+
+Perform natural language cosine similarity search against `gr_documents`:
+
+```bash
+python -m embeddings.search "मुलींसाठी शिष्यवृत्ती"
+```
+
+Sample output format:
+
+```text
+Executing semantic search for: 'मुलींसाठी शिष्यवृत्ती'
+
+Top 20 results:
+============================================================
+[01] Score: 0.8412
+     ID        : 142
+     GR Number : MVR-2023/CR12/PR1
+     Dept      : महिला व बालविकास विभाग
+     Date      : 2023-05-15
+     Subject   : मुलींसाठी विशेष शिष्यवृत्ती योजना मंजुरीबाबत...
+     File      : 20230515120000001.txt
+------------------------------------------------------------
+```
+
+### 4. Python API Usage
+
+```python
+from embeddings.search import semantic_search
+
+results = semantic_search("मुलींसाठी शिष्यवृत्ती", top_k=10)
+for item in results:
+    print(f"[{item['score']:.4f}] {item['gr_number_canonical']} - {item['subject_mr']}")
+```
+
+---
+
+## Phase 4 — Graph + Vector Retrieval (Hybrid Search)
+
+Phase 4 combines natural language vector retrieval with citation graph expansion in Neo4j to retrieve both semantically relevant GRs and their directly/indirectly cited dependencies.
+
+```
+                  Query
+                    │
+                    ▼
+       ┌────────────────────────┐
+       │ pgvector Semantic      │  top_k seed GRs (ranked by similarity score)
+       │ Search                 │
+       └───────────┬────────────┘
+                   │ seed GR IDs
+                   ▼
+       ┌────────────────────────┐
+       │ Neo4j CITES Graph      │  expand paths: (seed)-[:CITES*1..hops]-(related)
+       │ Expansion              │  (both directions, excludes seed IDs)
+       └───────────┬────────────┘
+                   │ union & deduplicate (vector hits prioritized)
+                   ▼
+       ┌────────────────────────┐
+       │ Postgres Batch         │  SELECT metadata WHERE id = ANY(final_ids)
+       │ Metadata Hydration     │
+       └───────────┬────────────┘
+                   │
+                   ▼
+             Merged Results
+```
+
+### 1. Hybrid Pipeline Concept
+
+- **Vector Seeds (`source: "vector"`)**: Retrieved via pgvector cosine similarity search (`embeddings.search.semantic_search`). They retain their numeric similarity score (`score`).
+- **Graph Expansion (`source: "graph"`)**: Retrieved by traversing Neo4j `CITES` relationships up to `hops` distance from seed nodes. They carry `hop_distance` (e.g. 1, 2) and `score: None` because graph-expanded nodes are included for structural citation context rather than textual similarity.
+- **Deduplication**: Vector hits are prioritized over graph hits (a vector hit will never be overwritten by a graph expansion).
+- **Ranking**: Vector seeds appear first in similarity rank order, followed by graph-expanded hits ordered by `hop_distance` ascending.
+
+### 2. Running Hybrid Search via CLI
+
+Run a hybrid search query with default parameters (`top_k=20`, `hops=1`, `max_results=50`):
+
+```bash
+python -m retrieval.hybrid "AICTE engineering colleges"
+```
+
+Example CLI Output:
+
+```text
+Executing hybrid search for: 'AICTE engineering colleges'
+Parameters: top_k=20, hops=1, max_results=50
+
+Total results returned: 24
+
+ID       GR Number                           Department                     Source   Hops  Score   
+================================================================────────────────────────────────
+1405     अकिंरा-2015/प्र.क्र.125/तांशि-4     उच्च व तंत्र शिक्षण विभाग      vector   0     0.7842  
+892      सँकिर्ण-2011/प्र.क्र.98/तांशि-4     उच्च व तंत्र शिक्षण विभाग      vector   0     0.7105  
+2104     अकिंरा-2018/प्र.क्र.44/तांशि-4      उच्च व तंत्र शिक्षण विभाग      graph    1     N/A     
+```
+
+### 3. Python API Usage
+
+```python
+from retrieval.hybrid import hybrid_search
+
+results = hybrid_search("AICTE engineering colleges", top_k=10, hops=1, max_results=30)
+
+for res in results:
+    score_str = f"{res['score']:.4f}" if res['score'] is not None else "N/A"
+    print(f"[{res['source']}|hop={res['hop_distance']}|score={score_str}] "
+          f"{res['gr_number_canonical']} - {res['subject_mr']}")
+```
+
+---
+
+## Phase 5 — AI Reasoning (RAG over Graph)
+
+Phase 5 builds an LLM reasoning engine on top of Phase 4's hybrid retrieval to support natural language Q&A, pairwise GR comparisons, and draft GR conflict/contradiction detection.
+
+```
+ User Query / Draft GR / GR Pair
+               │
+               ▼
+   ┌──────────────────────┐
+   │ Hybrid Retrieval     │  vector seeds + graph expansion
+   │ (retrieval.hybrid)   │
+   └───────────┬──────────┘
+               │ candidate GRs
+               ▼
+   ┌──────────────────────┐
+   │ Context Builder      │  selective OCR text hydration &
+   │ (reasoning.context)  │  label assignment ([GR 1], [GR 2]...)
+   └───────────┬──────────┘
+               │ structured context block
+               ▼
+   ┌──────────────────────┐
+   │ Groq LLM Reasoner    │  multi-key rotation, strict system prompts,
+   │ (reasoning.llm)      │  JSON format enforcement & retry validation
+   └───────────┬──────────┘
+               │
+               ▼
+  Pydantic Validated JSON
+ (QueryAnswer / ComparisonResult / ConflictFinding)
+```
+
+> [!NOTE]
+> **Design Note**: Phase 5 uses Retrieval-Augmented Generation (RAG) over the hybrid citation graph rather than fine-tuned models. All answers are strictly grounded in retrieved GR context to eliminate hallucinated legal claims.
+
+### 1. Configuration Setup
+
+Add reasoning configuration to your `.env` file:
+
+```bash
+# AI Reasoning (Phase 5)
+REASONING_MODEL=llama-3.3-70b-versatile
+REASONING_MAX_FULL_TEXT_DOCS=8
+```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REASONING_MODEL` | `llama-3.3-70b-versatile` | Strong Groq LLM model for legal reasoning and JSON synthesis |
+| `REASONING_MAX_FULL_TEXT_DOCS` | `8` | Max top-priority GRs to include full OCR text excerpts for in prompts |
+
+### 2. CLI Commands & Output Examples
+
+#### Task 1: General Q&A over GR Corpus (`query`)
+
+```bash
+python -m reasoning.llm_reasoner query "does GR X conflict with scholarship policy"
+```
+
+Example Output (`QueryAnswer` JSON):
+
+```json
+{
+  "answer": "According to [GR 1] and [GR 2], the revised scholarship policy applies to students enrolled in technical courses. [GR 1] establishes eligibility criteria...",
+  "supporting_grs": [
+    {
+      "label": "[GR 1]",
+      "gr_number_canonical": "संकीर्ण2023/प्र.क्र.12/मशि2",
+      "relevance_note": "Specifies scholarship eligibility rules."
+    }
+  ],
+  "confidence": 0.95
+}
+```
+
+#### Task 2: Pairwise GR Comparison (`compare`)
+
+```bash
+python -m reasoning.llm_reasoner compare 142 860
+```
+
+Example Output (`ComparisonResult` JSON):
+
+```json
+{
+  "summary": "GR B updates the administrative approval for hostel construction and alters student quota requirements.",
+  "added": [
+    "1200 seat auditorium allocation for ITI Karad."
+  ],
+  "removed": [
+    "Prior committee approval clause from 2009 policy."
+  ],
+  "changed": [
+    "Land allocation increased from 5000 sq.m to 7000 sq.m."
+  ],
+  "contradictions": [],
+  "confidence": 0.92
+}
+```
+
+#### Task 3: Draft Conflict Detection (`conflict`)
+
+```bash
+python -m reasoning.llm_reasoner conflict "मुलींसाठी विशेष शिष्यवृत्ती योजना मंजुरीबाबत..."
+```
+
+Example Output (`ConflictFinding` JSON):
+
+```json
+{
+  "conflicting": true,
+  "explanation": "The proposed draft conflicts with existing policy in [GR 1] regarding income ceiling limits for girls' scholarship eligibility.",
+  "conflicting_clauses": [
+    "Draft specifies annual family income < ₹8 Lakhs, whereas [GR 1] mandates < ₹2.5 Lakhs."
+  ],
+  "affected_grs": [
+    {
+      "label": "[GR 1]",
+      "gr_number_canonical": "अर्थसं2022/प्र.क्र.52/मशि3",
+      "relevance_note": "Conflicting income ceiling rule."
+    }
+  ],
+  "confidence": 0.89
+}
+```
+
+
+
