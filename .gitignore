@@ -1,0 +1,81 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Secrets & local config — NEVER commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+secrets/
+
+# OS junk
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+
+# Editors / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.cursor/
+
+# Logs & run artifacts
+*.log
+failed_metadata.txt
+failed_ingest.txt
+failed_*.txt
+
+# Generated extraction outputs (large; regenerate locally)
+metadata/
+eh/
+*.json.tmp
+
+# OCR corpus (large binary/text dumps — keep local / supply separately)
+maha_grs 2/
+maha_grs/
+**/fulltext/
+**/hocr/
+
+# Local databases / dumps
+*.sql.gz
+*.dump
+*.backup
+postgres-data/
+neo4j/data/
+neo4j/logs/
+
+# Test / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Misc
+*.tmp
+*.bak
+.cache/
