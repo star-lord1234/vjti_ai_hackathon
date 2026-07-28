@@ -613,5 +613,41 @@ Example Output (`ConflictFinding` JSON):
 }
 ```
 
+---
+
+## Running the API Layer (`backend/api`)
+
+The `api/` package provides a FastAPI layer exposing search, document management, graph visualization, and AI reasoning over HTTP.
+
+### 1. Start the API Server
+
+From the `backend/` directory (or workspace root), run:
+
+```bash
+uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+> [!NOTE]
+> Ensure the separate frontend (e.g. React/Vite dev server running on `http://localhost:5173`) has its API base URL environment variable set to:
+> `VITE_API_BASE_URL=http://localhost:8000`
+
+Interactive OpenAPI documentation is available at `http://localhost:8000/docs`.
+
+### 2. API Endpoints Table
+
+| Method | Path | Description / Purpose |
+|--------|------|-----------------------|
+| `GET` | `/health` | Health check & Postgres database connectivity check |
+| `GET` | `/search?q=<query>&top_k=20&hops=1` | Hybrid vector + graph expansion search |
+| `GET` | `/search/vector-only?q=<query>&top_k=20` | Plain vector semantic search |
+| `GET` | `/documents` | List & paginate GR documents (`page`, `page_size`, `department`, `search`) |
+| `GET` | `/documents/{gr_id}` | Detailed metadata + full OCR text + raw JSONB citations |
+| `GET` | `/documents/{gr_id}/citations` | Raw citations array & resolved Neo4j target GRs |
+| `GET` | `/graph/{gr_id}?hops=2` | Subgraph node/link network for visualizers (`react-force-graph` / `vis-network`) |
+| `POST` | `/reasoning/query` | RAG natural language Q&A (`QueryAnswer` JSON) |
+| `POST` | `/reasoning/compare` | Pairwise clause comparison (`ComparisonResult` JSON) |
+| `POST` | `/reasoning/conflict` | Draft conflict & contradiction detection (`ConflictFinding` JSON) |
+
+
 
 
