@@ -281,13 +281,15 @@ def check_conflict(
     """
     print("\n--- [check_conflict] Analyzing draft GR for conflicts ---")
 
-    # If draft_input points to a file, read its text
-    draft_path = Path(draft_input)
-    if draft_path.exists() and draft_path.is_file():
-        print(f"Reading draft text from file: {draft_path}")
-        draft_text = draft_path.read_text(encoding="utf-8", errors="ignore")
-    else:
-        draft_text = draft_input
+    draft_text = draft_input
+    if len(draft_input) < 512:
+        try:
+            draft_path = Path(draft_input)
+            if draft_path.exists() and draft_path.is_file():
+                print(f"Reading draft text from file: {draft_path}")
+                draft_text = draft_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            pass
 
     draft_text_clean = draft_text.strip()
     if not draft_text_clean:

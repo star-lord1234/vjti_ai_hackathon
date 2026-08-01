@@ -1,0 +1,93 @@
+{
+  "01_short_simple.txt": {
+    "fixture_name": "01_short_simple.txt",
+    "sha256": "75389ace4d4bc7a39fe24d45a1d37737af1c66d2d7604031249b91cb0adb70b0",
+    "text_length": 318,
+    "timestamp": 1785234122.956177,
+    "direct_latency_ms": 15736.75,
+    "http_latency_ms": 23719.04,
+    "direct_response": {
+      "conflicting": false,
+      "explanation": "The proposed draft GR regarding streamlining ITI scholarship and fee structure does not directly conflict with, duplicate, or contradict the existing GRs provided in the context. The existing GRs primarily deal with the closure or reduction of vocational courses and institutions based on the All India Council for Technical Education's (AICTE) approval, whereas the proposed draft focuses on the processing timeline for ITI scholarship distributions under Category B.",
+      "conflicting_clauses": [],
+      "affected_grs": [],
+      "confidence": 0.9
+    },
+    "http_response": {
+      "conflicting": true,
+      "explanation": "The Proposed Draft GR conflicts with existing GRs [GR 1], [GR 2], [GR 3], [GR 4], [GR 5], [GR 6], [GR 8] from the Higher and Technical Education Department. The Proposed Draft GR introduces a new timeline for processing ITI scholarship distributions, which contradicts the existing GRs that have already implemented progressive closure or reduction of vocational courses.",
+      "conflicting_clauses": [
+        "All ITI scholarship distributions under Category B shall be processed within 15 working days of application.",
+        "The Competent Authority hereby notifies that all ITI scholarship distributions under Category B shall be processed within 15 working days of application."
+      ],
+      "affected_grs": [
+        {
+          "label": "[GR 1]",
+          "gr_number_canonical": "\u091f\u0940\u0908\u090f\u092e2020\u092a\u094d\u0930\u0915\u094d\u093098\u0924\u093e\u0902\u0936\u093f4",
+          "relevance_note": "Existing GR that has already implemented progressive closure of vocational courses."
+        },
+        {
+          "label": "[GR 2]",
+          "gr_number_canonical": null,
+          "relevance_note": "Existing GR that has already implemented progressive closure of vocational courses."
+        },
+        {
+          "label": "[GR 3]",
+          "gr_number_canonical": "\u092e\u093e\u0928\u094d\u092f\u0924\u093e2024\u092a\u094d\u0930\u0915\u094d\u0930430\u0924\u093e\u0902\u0936\u093f4",
+          "relevance_note": "Existing GR that has already implemented progressive closure of vocational courses."
+        },
+        {
+          "label": "[GR 4]",
+          "gr_number_canonical": "\u091f\u0940\u0908\u090f\u092e2020\u092a\u094d\u0930\u0915\u094d\u093098\u0924\u093e\u0902\u0936\u093f4",
+          "relevance_note": "Existing GR that has already implemented progressive closure of vocational courses."
+        },
+        {
+          "label": "[GR 5]",
+          "gr_number_canonical": "\u091f\u0940\u0908\u090f\u092e2014\u092a\u094d\u0930\u0915\u094d\u0930124\u0924\u093e\u0902\u0936\u093f4",
+          "relevance_note": "Existing GR that has already implemented progressive closure of vocational courses."
+        },
+        {
+          "label": "[GR 6]",
+          "gr_number_canonical": "\u092e\u093e\u0928\u094d\u092f\u0924\u093e2019\u092a\u094d\u0930\u0915\u094d\u09301019\u0924\u093e\u0902\u0936\u093f5",
+          "relevance_note": "Existing GR that has already implemented progressive closure of vocational courses."
+        },
+        {
+          "label": "[GR 8]",
+          "gr_number_canonical": "\u092e\u093e\u0928\u094d\u092f\u0924\u093e2016\u092a\u094d\u0930\u0915\u094d\u093027816\u0924\u093e\u0902\u0936\u093f5",
+          "relevance_note": "Existing GR that has already implemented progressive closure of vocational courses."
+        }
+      ],
+      "confidence": 1.0
+    },
+    "field_diff": {
+      "overall_pass": false,
+      "fields": {
+        "conflicting": {
+          "pass": false,
+          "direct": false,
+          "http": true
+        },
+        "confidence": {
+          "pass": true,
+          "direct": 0.9,
+          "http": 1.0
+        },
+        "affected_grs": {
+          "pass": false,
+          "direct_count": 0,
+          "http_count": 6
+        },
+        "explanation": {
+          "pass": true,
+          "direct_len": 468,
+          "http_len": 371
+        },
+        "conflicting_clauses": {
+          "pass": true,
+          "direct_count": 0,
+          "http_count": 2
+        }
+      }
+    }
+  }
+}
