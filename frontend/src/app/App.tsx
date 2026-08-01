@@ -410,29 +410,215 @@ function InspectorDrawer({
   );
 }
 
+// ─── Highlight matching helpers ───────────────────────────────────────────────
+
+/** Normalize for matching only — never mutate displayed text. */
+function normalizeForMatch(text: string): string {
+  return text
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeChar(ch: string): string {
+  if (/[\u2018\u2019\u201A\u201B]/.test(ch)) return "'";
+  if (/[\u201C\u201D\u201E\u201F]/.test(ch)) return '"';
+  if (/\s/.test(ch)) return " ";
+  return ch;
+}
+
+/**
+ * Build normalized haystack + index map so a normalized match can be
+ * sliced back onto the original (display) string.
+ */
+function buildNormalizedIndex(original: string): {
+  normalized: string;
+  normToOrig: number[];
+} {
+  const chars: string[] = [];
+  const normToOrig: number[] = [];
+  let lastWasSpace = true; // trim leading whitespace
+  for (let i = 0; i < original.length; i++) {
+    const nc = normalizeChar(original[i]);
+    if (nc === " ") {
+      if (lastWasSpace) continue;
+      lastWasSpace = true;
+      chars.push(" ");
+      normToOrig.push(i);
+    } else {
+      lastWasSpace = false;
+      chars.push(nc);
+      normToOrig.push(i);
+    }
+  }
+  while (chars.length > 0 && chars[chars.length - 1] === " ") {
+    chars.pop();
+    normToOrig.pop();
+  }
+  return { normalized: chars.join(""), normToOrig };
+}
+
+function findExactRange(
+  original: string,
+  snippet: string
+): { start: number; end: number } | null {
+  const needle = normalizeForMatch(snippet);
+  if (!needle) return null;
+  const { normalized, normToOrig } = buildNormalizedIndex(original);
+  const idx = normalized.indexOf(needle);
+  if (idx === -1) return null;
+  const start = normToOrig[idx];
+  const last = normToOrig[idx + needle.length - 1];
+  return { start, end: last + 1 };
+}
+
+function tokenOverlapRatio(a: string, b: string): number {
+  const tokensA = new Set(
+    normalizeForMatch(a)
+      .toLowerCase()
+      .split(" ")
+      .filter(Boolean)
+  );
+  const tokensB = new Set(
+    normalizeForMatch(b)
+      .toLowerCase()
+      .split(" ")
+      .filter(Boolean)
+  );
+  if (tokensA.size === 0 || tokensB.size === 0) return 0;
+  let overlap = 0;
+  for (const t of tokensA) {
+    if (tokensB.has(t)) overlap += 1;
+  }
+  return overlap / Math.max(tokensA.size, tokensB.size);
+}
+
+type HighlightMatch =
+  | { kind: "exact"; paragraphIndex: number; start: number; end: number }
+  | { kind: "fuzzy"; paragraphIndex: number };
+
+function findHighlightMatch(paragraphs: string[], snippet: string): HighlightMatch | null {
+  const normSnippet = normalizeForMatch(snippet);
+  if (!normSnippet) return null;
+
+  for (let i = 0; i < paragraphs.length; i++) {
+    const range = findExactRange(paragraphs[i], snippet);
+    if (range) {
+      return { kind: "exact", paragraphIndex: i, start: range.start, end: range.end };
+    }
+  }
+
+  let bestIdx = -1;
+  let bestScore = 0;
+  for (let i = 0; i < paragraphs.length; i++) {
+    const score = tokenOverlapRatio(paragraphs[i], snippet);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = i;
+    }
+  }
+  if (bestIdx >= 0 && bestScore >= 0.2) {
+    return { kind: "fuzzy", paragraphIndex: bestIdx };
+  }
+  return null;
+}
+
+function highlightMarkClass(severity: Severity): string {
+  switch (severity) {
+    case "high":
+      return "bg-red-200/80 text-red-950 rounded-sm px-0.5 box-decoration-clone";
+    case "medium":
+      return "bg-amber-200/80 text-amber-950 rounded-sm px-0.5 box-decoration-clone";
+    case "low":
+      return "bg-blue-200/80 text-blue-950 rounded-sm px-0.5 box-decoration-clone";
+  }
+}
+
+function highlightBlockClass(severity: Severity): string {
+  switch (severity) {
+    case "high":
+      return "bg-red-50 outline outline-2 outline-red-300 rounded-sm";
+    case "medium":
+      return "bg-amber-50 outline outline-2 outline-amber-300 rounded-sm";
+    case "low":
+      return "bg-blue-50 outline outline-2 outline-blue-300 rounded-sm";
+  }
+}
+
+/** Subset of Finding fields needed for document highlighting (generic across finding types). */
+type HighlightableFinding = {
+  id: string;
+  /** Text snippet to locate in the draft — sourced from Finding.summary today. */
+  matchedText: string;
+  severity: Severity;
+};
+
+function renderHighlightedText(
+  text: string,
+  match: HighlightMatch | null,
+  paragraphIndex: number,
+  severity: Severity
+) {
+  if (!match || match.paragraphIndex !== paragraphIndex) {
+    return text;
+  }
+  if (match.kind === "fuzzy") {
+    return <mark className={highlightMarkClass(severity)}>{text}</mark>;
+  }
+  const before = text.slice(0, match.start);
+  const mid = text.slice(match.start, match.end);
+  const after = text.slice(match.end);
+  return (
+    <>
+      {before}
+      <mark className={highlightMarkClass(severity)}>{mid}</mark>
+      {after}
+    </>
+  );
+}
+
 // ─── DocumentViewer ───────────────────────────────────────────────────────────
 
 function DocumentViewer({
   draftText,
   highlightedFinding,
   zoom,
-  scrollTarget,
+  scrollKey = 0,
 }: {
   draftText: string;
-  highlightedFinding: string | null;
+  highlightedFinding: HighlightableFinding | null;
   zoom: number;
-  scrollTarget: string | null;
+  /** Bump to re-scroll to the current highlight (e.g. Jump to clause). */
+  scrollKey?: number;
 }) {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const highlightRef = useRef<HTMLDivElement>(null);
 
-  // Split raw text into paragraphs if user uploaded draft text
   const paragraphs = draftText
     ? draftText.split(/\n\n+/).filter((b) => b.trim().length > 0)
     : [];
 
+  const defaultTexts = DEFAULT_PARAGRAPHS.map((p) =>
+    p.label ? `${p.label}\n${p.text}` : p.text
+  );
+  const textsForMatch = paragraphs.length > 0 ? paragraphs : defaultTexts;
+
+  const match =
+    highlightedFinding?.matchedText
+      ? findHighlightMatch(textsForMatch, highlightedFinding.matchedText)
+      : null;
+
+  // Scroll matched paragraph into view when the selected finding (or jump request) changes
+  useEffect(() => {
+    if (!highlightedFinding?.id) return;
+    const t = window.setTimeout(() => {
+      highlightRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 50);
+    return () => window.clearTimeout(t);
+  }, [highlightedFinding?.id, scrollKey]);
+
   return (
     <div
-      ref={containerRef}
       className="flex-1 overflow-y-auto bg-[#525659] flex justify-center py-8 px-6"
       style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}
     >
@@ -448,31 +634,100 @@ function DocumentViewer({
         }}
       >
         {paragraphs.length > 0 ? (
-          paragraphs.map((p, idx) => (
-            <div key={idx} className="mb-6 text-justify">
-              <p className="whitespace-pre-wrap">{p}</p>
-            </div>
-          ))
+          paragraphs.map((p, idx) => {
+            const isHighlighted = Boolean(highlightedFinding && match?.paragraphIndex === idx);
+            return (
+              <div
+                key={idx}
+                ref={isHighlighted ? highlightRef : undefined}
+                className={`mb-6 text-justify ${
+                  isHighlighted && highlightedFinding
+                    ? highlightBlockClass(highlightedFinding.severity)
+                    : ""
+                }`}
+              >
+                <p className="whitespace-pre-wrap">
+                  {highlightedFinding
+                    ? renderHighlightedText(p, match, idx, highlightedFinding.severity)
+                    : p}
+                </p>
+              </div>
+            );
+          })
         ) : (
-          DEFAULT_PARAGRAPHS.map((para) => (
-            <div key={para.id} className="mb-7">
-              {para.type === "header" && (
-                <div className="text-center mb-10 pb-8 border-b-2 border-[#1a1a1a]">
-                  {para.text.split("\n").map((line, i) => (
-                    <p key={i} className={i < 2 ? "font-bold text-base uppercase tracking-widest" : "text-sm text-[#374151]"}>
-                      {line}
+          DEFAULT_PARAGRAPHS.map((para, idx) => {
+            const isHighlighted = Boolean(highlightedFinding && match?.paragraphIndex === idx);
+            // Match was computed against label+text; re-resolve against body for exact splits
+            let bodyMatch: HighlightMatch | null = null;
+            if (isHighlighted && highlightedFinding && match) {
+              if (match.kind === "exact") {
+                const range = findExactRange(para.text, highlightedFinding.matchedText);
+                bodyMatch = range
+                  ? { kind: "exact", paragraphIndex: idx, start: range.start, end: range.end }
+                  : { kind: "fuzzy", paragraphIndex: idx };
+              } else {
+                bodyMatch = match;
+              }
+            }
+
+            return (
+              <div
+                key={para.id}
+                ref={isHighlighted ? highlightRef : undefined}
+                className={`mb-7 ${
+                  isHighlighted && highlightedFinding
+                    ? highlightBlockClass(highlightedFinding.severity)
+                    : ""
+                }`}
+              >
+                {para.type === "header" && (
+                  <div className="text-center mb-10 pb-8 border-b-2 border-[#1a1a1a]">
+                    {para.text.split("\n").map((line, i) => (
+                      <p
+                        key={i}
+                        className={
+                          i < 2
+                            ? "font-bold text-base uppercase tracking-widest"
+                            : "text-sm text-[#374151]"
+                        }
+                      >
+                        {line}
+                      </p>
+                    ))}
+                  </div>
+                )}
+                {para.type === "section" && (
+                  <div className="mb-4">
+                    {para.label && (
+                      <p className="font-bold uppercase mb-2">{para.label}</p>
+                    )}
+                    <p>
+                      {highlightedFinding
+                        ? renderHighlightedText(
+                            para.text,
+                            bodyMatch,
+                            idx,
+                            highlightedFinding.severity
+                          )
+                        : para.text}
                     </p>
-                  ))}
-                </div>
-              )}
-              {para.type === "section" && (
-                <div className="mb-4">
-                  {para.label && <p className="font-bold uppercase mb-2">{para.label}</p>}
-                  <p>{para.text}</p>
-                </div>
-              )}
-            </div>
-          ))
+                  </div>
+                )}
+                {(para.type === "subject" || para.type === "filler") && (
+                  <p className={para.type === "subject" ? "mb-6 font-medium" : "mb-4"}>
+                    {highlightedFinding
+                      ? renderHighlightedText(
+                          para.text,
+                          bodyMatch,
+                          idx,
+                          highlightedFinding.severity
+                        )
+                      : para.text}
+                  </p>
+                )}
+              </div>
+            );
+          })
         )}
       </div>
     </div>
@@ -926,7 +1181,7 @@ export default function App() {
   const [conflictResult, setConflictResult] = useState<ConflictFinding | null>(null);
 
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
-  const [scrollTarget, setScrollTarget] = useState<string | null>(null);
+  const [scrollKey, setScrollKey] = useState(0);
   const [zoom, setZoom] = useState(100);
   const [currentPage, setCurrentPage] = useState(1);
   const [searchQuery, setSearchQuery] = useState("");
@@ -975,15 +1230,12 @@ export default function App() {
       setSelectedFinding(null);
     } else {
       setSelectedFinding(finding);
-      setScrollTarget(finding.id);
-      setTimeout(() => setScrollTarget(null), 100);
     }
   };
 
   const handleJumpToClause = () => {
     if (!selectedFinding) return;
-    setScrollTarget(selectedFinding.id);
-    setTimeout(() => setScrollTarget(null), 100);
+    setScrollKey((k) => k + 1);
   };
 
   const toggleBookmark = (id: string) => {
@@ -1295,9 +1547,17 @@ export default function App() {
 
               <DocumentViewer
                 draftText={draftText}
-                highlightedFinding={selectedFinding?.id ?? null}
+                highlightedFinding={
+                  selectedFinding
+                    ? {
+                        id: selectedFinding.id,
+                        matchedText: selectedFinding.summary,
+                        severity: selectedFinding.severity,
+                      }
+                    : null
+                }
                 zoom={zoom}
-                scrollTarget={scrollTarget}
+                scrollKey={scrollKey}
               />
             </div>
 
