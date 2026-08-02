@@ -6,7 +6,9 @@ from pathlib import Path
 import psycopg
 
 
-VECTOR_DIM = 768
+VECTOR_DIM = int(os.getenv("VECTOR_DIM", "768"))
+HNSW_M = int(os.getenv("HNSW_M", "16"))
+HNSW_EF_CONSTRUCTION = int(os.getenv("HNSW_EF_CONSTRUCTION", "64"))
 
 
 class Database:
@@ -62,9 +64,37 @@ class Database:
         )
 
         self.cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS gr_chunks (
+                id BIGSERIAL PRIMARY KEY,
+                document_id BIGINT NOT NULL REFERENCES gr_documents(id) ON DELETE CASCADE,
+                chunk_index INTEGER NOT NULL,
+                chunk_text TEXT NOT NULL,
+                embedding vector({VECTOR_DIM}),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
             """
+        )
+
+        self.cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS gr_chunks_doc_id_idx ON gr_chunks(document_id)
+            """
+        )
+
+        self.cur.execute(
+            f"""
             CREATE INDEX IF NOT EXISTS gr_documents_embedding_hnsw_idx
             ON gr_documents USING hnsw (embedding vector_cosine_ops)
+            WITH (m = {HNSW_M}, ef_construction = {HNSW_EF_CONSTRUCTION})
+            """
+        )
+
+        self.cur.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS gr_chunks_embedding_hnsw_idx
+            ON gr_chunks USING hnsw (embedding vector_cosine_ops)
+            WITH (m = {HNSW_M}, ef_construction = {HNSW_EF_CONSTRUCTION})
             """
         )
 
@@ -149,7 +179,14 @@ class Database:
             gr_date = EXCLUDED.gr_date,
             subject_mr = EXCLUDED.subject_mr,
             citations = EXCLUDED.citations,
-            ocr_text = EXCLUDED.ocr_text
+            ocr_text = EXCLUDED.ocr_text,
+            embedding = CASE
+                WHEN gr_documents.ocr_text IS DISTINCT FROM EXCLUDED.ocr_text
+                  OR gr_documents.subject_mr IS DISTINCT FROM EXCLUDED.subject_mr
+                  OR gr_documents.department IS DISTINCT FROM EXCLUDED.department
+                THEN NULL
+                ELSE gr_documents.embedding
+            END
         """
 
         data = metadata.copy()
@@ -184,6 +221,17 @@ class Database:
         data.setdefault("department", metadata.get("department"))
 
         self.cur.execute(query, data)
+        
+        # If document OCR or metadata changed, delete stale chunk embeddings
+        self.cur.execute(
+            """
+            DELETE FROM gr_chunks
+            WHERE document_id IN (
+                SELECT id FROM gr_documents WHERE filename = %s AND embedding IS NULL
+            )
+            """,
+            (data["filename"],),
+        )
 
         if commit:
             self.conn.commit()
@@ -235,6 +283,12 @@ class Database:
         """
         Map gr_number_canonical -> document id.
         If duplicates exist, keep the lowest id (deterministic).
+
+        Returns
+        -------
+        tuple[dict, list]
+            (index, duplicates) where duplicates is a list of
+            (canonical, kept_id, duplicate_id) tuples.
         """
 
         self.cur.execute(
@@ -248,10 +302,21 @@ class Database:
         )
 
         index = {}
+        duplicates = []
         for doc_id, canonical in self.cur.fetchall():
             if canonical not in index:
                 index[canonical] = doc_id
-        return index
+            else:
+                duplicates.append((canonical, index[canonical], doc_id))
+
+        if duplicates:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Duplicate gr_number_canonical values: %d (keeping lowest id)",
+                len(duplicates),
+            )
+
+        return index, duplicates
 
     def count(self):
         self.cur.execute("SELECT COUNT(*) FROM gr_documents")
@@ -265,7 +330,12 @@ class Database:
         FROM gr_documents
         """
         if only_missing:
-            query += " WHERE embedding IS NULL"
+            query += """
+            WHERE embedding IS NULL
+               OR NOT EXISTS (
+                   SELECT 1 FROM gr_chunks c WHERE c.document_id = gr_documents.id
+               )
+            """
         query += " ORDER BY id"
 
         self.cur.execute(query)
@@ -295,11 +365,40 @@ class Database:
         if commit:
             self.conn.commit()
 
-    def search_embeddings(self, query_embedding: str, top_k: int = 20):
+    def delete_chunks_for_document(self, doc_id: int, commit: bool = True):
+        """Delete existing chunks for a single document."""
+        self.cur.execute("DELETE FROM gr_chunks WHERE document_id = %s", (doc_id,))
+        if commit:
+            self.conn.commit()
+
+    def insert_chunks_batch(self, batch: list, commit: bool = True):
         """
-        Cosine distance nearest-neighbor search using pgvector <=> operator.
-        Returns rows with calculated similarity score (1 - distance).
+        Batch insert chunks into gr_chunks.
+        batch is a list of tuples: (doc_id, chunk_index, chunk_text, embedding_str)
         """
+        query = """
+        INSERT INTO gr_chunks (document_id, chunk_index, chunk_text, embedding)
+        VALUES (%s, %s, %s, %s::vector)
+        """
+        self.cur.executemany(query, batch)
+        if commit:
+            self.conn.commit()
+
+    def search_embeddings(
+        self,
+        query_embedding: str,
+        top_k: int = 20,
+        min_score: float = None,
+    ):
+        """
+        Cosine distance nearest-neighbor search on gr_documents using pgvector <=> operator.
+        Includes HNSW ef_search recall tuning and optional min_score filtering.
+        """
+        ef_search = int(os.getenv("HNSW_EF_SEARCH", "64"))
+        try:
+            self.cur.execute(f"SET LOCAL hnsw.ef_search = {ef_search};")
+        except Exception:
+            pass
 
         query = """
         SELECT id, filename, gr_number_canonical, department, gr_date, subject_mr,
@@ -309,14 +408,65 @@ class Database:
         ORDER BY distance ASC
         LIMIT %s
         """
-        self.cur.execute(query, (str(query_embedding), top_k))
+        fetch_limit = top_k * 2 if min_score is not None else top_k
+        self.cur.execute(query, (str(query_embedding), fetch_limit))
         columns = [desc[0] for desc in self.cur.description]
         results = []
         for row in self.cur.fetchall():
             item = dict(zip(columns, row))
             distance = float(item.pop("distance"))
-            item["score"] = 1.0 - distance
+            score = 1.0 - distance
+            if min_score is not None and score < min_score:
+                continue
+            item["score"] = score
             results.append(item)
+            if len(results) >= top_k:
+                break
+        return results
+
+    def count_chunks(self) -> int:
+        self.cur.execute("SELECT COUNT(*) FROM gr_chunks")
+        return self.cur.fetchone()[0]
+
+    def search_chunks(
+        self,
+        query_embedding: str,
+        top_k: int = 20,
+        min_score: float = None,
+    ):
+        """
+        Cosine distance nearest-neighbor search on gr_chunks using pgvector <=> operator.
+        Returns matching document metadata + chunk information.
+        """
+        ef_search = int(os.getenv("HNSW_EF_SEARCH", "64"))
+        try:
+            self.cur.execute(f"SET LOCAL hnsw.ef_search = {ef_search};")
+        except Exception:
+            pass
+
+        query = """
+        SELECT c.document_id AS id, d.filename, d.gr_number_canonical, d.department, d.gr_date, d.subject_mr,
+               c.chunk_index, c.chunk_text, (c.embedding <=> %s::vector) AS distance
+        FROM gr_chunks c
+        JOIN gr_documents d ON c.document_id = d.id
+        WHERE c.embedding IS NOT NULL
+        ORDER BY distance ASC
+        LIMIT %s
+        """
+        fetch_limit = top_k * 3
+        self.cur.execute(query, (str(query_embedding), fetch_limit))
+        columns = [desc[0] for desc in self.cur.description]
+        results = []
+        for row in self.cur.fetchall():
+            item = dict(zip(columns, row))
+            distance = float(item.pop("distance"))
+            score = 1.0 - distance
+            if min_score is not None and score < min_score:
+                continue
+            item["score"] = score
+            results.append(item)
+            if len(results) >= top_k:
+                break
         return results
 
     def get_by_id(self, doc_id: int):

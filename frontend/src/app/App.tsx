@@ -30,35 +30,100 @@ import {
   Clock,
   TrendingUp,
   FileCode,
+  Languages,
+  LayoutTemplate,
 } from "lucide-react";
-import { checkHealth, checkConflict, ConflictFinding, ApiError } from "../lib/api";
-import { mapConflictFindingToFindings, Finding, Severity } from "../lib/adapters";
+import { DraftChatWidget } from "./components/DraftChatWidget";
+import maharashtraSeal from "./components/figma/Seal_of_Maharashtra.svg";
+import {
+  checkHealth,
+  analyzeDraft,
+  ConflictFinding,
+  GlossaryCheckSection,
+  GlossaryFinding,
+  DraftAnalysisResponse,
+  TemplateCheckSection,
+  ApiError,
+} from "../lib/api";
+import {
+  mapConflictFindingToFindings,
+  mapTemplateFindingsToFindings,
+  Finding,
+  Severity,
+} from "../lib/adapters";
+import {
+  MAHARASHTRA_SAMPLE_DRAFT,
+  MAHARASHTRA_SAMPLE_FILENAME,
+} from "../lib/sampleDraft";
+import { extractTextFromPdf, isPdfFile } from "../lib/pdf";
+import { GR_TEMPLATE_RULES, GR_TEMPLATE_SCORING_NOTE } from "../lib/grTemplateRules";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Phase = "upload" | "processing" | "review";
 
-// ─── Default Sample Data (Fallback) ───────────────────────────────────────────
+// ─── Default Document Fallback (review UI only when draft is empty) ─────────
 
-const SAMPLE_DRAFT_TEXT = `GOVERNMENT OF INDIA
-MINISTRY OF ENVIRONMENT, FOREST AND CLIMATE CHANGE
-
-RESOLUTION
-
-Subject: National Green Infrastructure Development and Environmental Clearance Streamlining Resolution, 2024 — Guidelines for Implementation
-
-Section 4.2(b)
-State Authorities shall exercise EXCLUSIVE JURISDICTION over environmental impact assessments, including the power to commission, review, approve, or reject EIA reports, independent of any Central Government authority or agency, in respect of all projects not explicitly listed in Schedule I.
-
-Section 7.1
-The Competent Authority is hereby delegated the power to approve procurement of goods, services, and works up to a value of Rupees Eighty-Five Crore (₹85,00,00,000) without prior Parliamentary sanction, for projects falling under this Resolution.`;
+const DEFAULT_PARAGRAPHS: DocPara[] = [
+  {
+    id: "header",
+    type: "header",
+    text: "महाराष्ट्र शासन\nउच्च व तंत्र शिक्षण विभाग\n\nशासन निर्णय\n\nक्र. ITI-2024/CR-102/EDU-1",
+  },
+  {
+    id: "subject",
+    type: "subject",
+    text: "विषय: आयटीआय शिष्यवृत्ती व शुल्क रचनेचे एकत्रीकरण — अंमलबजावणी मार्गदर्शक तत्त्वे",
+  },
+  {
+    id: "s4",
+    type: "section",
+    label: "कलम 4 — अधिकारक्षेत्र",
+    highlight: "f-1",
+    highlightPhrase: "EXCLUSIVE JURISDICTION",
+    text: "4.1 संबंधित विभाग हा विषयाचा नोडल विभाग राहील.\n\n4.2 राज्य अधिकारी पर्यावरणीय प्रभाव मूल्यांकनासाठी EXCLUSIVE JURISDICTION बाळगतील.",
+  },
+  {
+    id: "s7",
+    type: "section",
+    label: "कलम 7 — आर्थिक अधिकार",
+    highlight: "f-2",
+    highlightPhrase: "₹85,00,00,000",
+    text: "7.1 सक्षम प्राधिकरणास रुपये पंच्याऐंशी लाख (₹85,00,00,000) पर्यंतच्या मर्यादेने खरेदी मंजूर करण्याचा अधिकार देण्यात येतो.",
+  },
+];
 
 const PROCESSING_STEPS = [
-  { id: "read", label: "Reading Document", sub: "Parsing document structure and metadata", icon: BookOpen },
-  { id: "extract", label: "Extracting Clauses", sub: "Identifying draft resolution provisions", icon: FileText },
-  { id: "detect", label: "Detecting Conflicts", sub: "Cross-referencing statutory database & Neo4j graph", icon: Shield },
-  { id: "analyse", label: "Generating Analysis", sub: "Producing severity assessments", icon: BarChart3 },
-  { id: "complete", label: "Review Complete", sub: "Findings ready for review", icon: CheckCircle2 },
+  {
+    id: "read",
+    label: "Reading Document",
+    sub: "Parsing document structure and metadata",
+    icon: BookOpen,
+  },
+  {
+    id: "extract",
+    label: "Extracting Clauses",
+    sub: "Identifying draft resolution provisions",
+    icon: FileText,
+  },
+  {
+    id: "detect",
+    label: "Detecting Conflicts",
+    sub: "Cross-referencing statutory database & Neo4j graph",
+    icon: Shield,
+  },
+  {
+    id: "analyse",
+    label: "Generating Analysis",
+    sub: "Producing severity assessments",
+    icon: BarChart3,
+  },
+  {
+    id: "complete",
+    label: "Review Complete",
+    sub: "Findings ready for review",
+    icon: CheckCircle2,
+  },
 ];
 
 interface DocPara {
@@ -69,37 +134,6 @@ interface DocPara {
   highlight?: string;
   highlightPhrase?: string;
 }
-
-const DEFAULT_PARAGRAPHS: DocPara[] = [
-  {
-    id: "header",
-    type: "header",
-    text: "GOVERNMENT OF INDIA\nMINISTRY OF ENVIRONMENT, FOREST AND CLIMATE CHANGE\n\nRESOLUTION\n\nNo. 14025/7/2024-ENV\nNew Delhi, dated the 18th July, 2024",
-  },
-  {
-    id: "subject",
-    type: "subject",
-    text: "Subject: National Green Infrastructure Development and Environmental Clearance Streamlining Resolution, 2024 — Guidelines for Implementation and Operational Framework",
-  },
-  {
-    id: "s4",
-    type: "section",
-    label: "Section 4 — Jurisdiction and Authority",
-    highlight: "f-1",
-    highlightPhrase:
-      "EXCLUSIVE JURISDICTION over environmental impact assessments",
-    text: "4.1 The Ministry shall be the nodal Ministry for all matters arising under this Resolution.\n\n4.2 State Authorities shall exercise (b) EXCLUSIVE JURISDICTION over environmental impact assessments, including the power to commission, review, approve, or reject EIA reports, independent of any Central Government authority or agency.",
-  },
-  {
-    id: "s7",
-    type: "section",
-    label: "Section 7 — Financial Powers and Procurement",
-    highlight: "f-2",
-    highlightPhrase:
-      "Rupees Eighty-Five Crore (₹85,00,00,000) without prior Parliamentary sanction",
-    text: "7.1 The Competent Authority is hereby delegated the power to approve procurement of goods, services, and works up to a value of Rupees Eighty-Five Crore (₹85,00,00,000) without prior Parliamentary sanction, for projects falling under this Resolution.",
-  },
-];
 
 // ─── Severity helpers ─────────────────────────────────────────────────────────
 
@@ -143,7 +177,13 @@ function severityConfig(s: Severity) {
 
 // ─── SeverityBadge ────────────────────────────────────────────────────────────
 
-function SeverityBadge({ severity, size = "sm" }: { severity: Severity; size?: "sm" | "md" }) {
+function SeverityBadge({
+  severity,
+  size = "sm",
+}: {
+  severity: Severity;
+  size?: "sm" | "md";
+}) {
   const cfg = severityConfig(severity);
   const Icon = cfg.icon;
   return (
@@ -222,9 +262,20 @@ function FindingCard({
           </div>
         </div>
 
-        <p className="text-sm font-medium text-[#111827] leading-snug mb-3">
+        <p className="text-sm font-medium text-[#111827] leading-snug mb-2">
           {finding.summary}
         </p>
+
+        {finding.corpusExcerpt && (
+          <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-800 mb-1">
+              Existing GR{finding.corpusGrLabel ? ` · ${finding.corpusGrLabel}` : ""}
+            </p>
+            <p className="text-xs text-amber-950 leading-relaxed line-clamp-2">
+              {finding.corpusExcerpt}
+            </p>
+          </div>
+        )}
 
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -273,8 +324,8 @@ function InspectorDrawer({
   return (
     <>
       <div
-        className={`fixed inset-0 z-40 transition-opacity duration-300 ${
-          finding ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
+        className={`fixed inset-0 z-40 transition-opacity duration-300 pointer-events-none ${
+          finding ? "opacity-100" : "opacity-0"
         }`}
         onClick={onClose}
       />
@@ -312,7 +363,11 @@ function InspectorDrawer({
               <div className="grid grid-cols-3 gap-2.5">
                 {[
                   { label: "Category", value: finding.category, icon: Layers },
-                  { label: "Page", value: `Page ${finding.page}`, icon: FileText },
+                  {
+                    label: "Page",
+                    value: `Page ${finding.page}`,
+                    icon: FileText,
+                  },
                   {
                     label: "Lines",
                     value: `${finding.lineRange[0]}–${finding.lineRange[1]}`,
@@ -327,7 +382,9 @@ function InspectorDrawer({
                       <MetaIcon size={11} className="text-[#9CA3AF]" />
                       <p className="text-xs text-[#9CA3AF]">{label}</p>
                     </div>
-                    <p className="text-xs font-semibold text-[#111827]">{value}</p>
+                    <p className="text-xs font-semibold text-[#111827]">
+                      {value}
+                    </p>
                   </div>
                 ))}
               </div>
@@ -344,8 +401,50 @@ function InspectorDrawer({
                     Jump to clause in document
                   </span>
                 </div>
-                <ArrowRight size={14} className="text-[#9CA3AF] group-hover:text-[#2563EB] transition-colors" />
+                <ArrowRight
+                  size={14}
+                  className="text-[#9CA3AF] group-hover:text-[#2563EB] transition-colors"
+                />
               </button>
+
+              {(finding.draftExcerpt || finding.corpusExcerpt) && (
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-5 h-5 rounded-md bg-[#FEF3C7] flex items-center justify-center">
+                      <Layers size={11} className="text-amber-700" />
+                    </div>
+                    <h3 className="text-xs font-semibold text-[#6B7280] uppercase tracking-wider">
+                      Draft vs Existing GR
+                    </h3>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3">
+                    {finding.draftExcerpt && (
+                      <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-red-700 mb-2">
+                          Draft GR says
+                        </p>
+                        <p className="text-sm text-red-950 leading-relaxed">
+                          {finding.draftExcerpt}
+                        </p>
+                      </div>
+                    )}
+                    {finding.corpusExcerpt && (
+                      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-800 mb-2">
+                          Existing GR says
+                          {finding.corpusGrLabel ? ` (${finding.corpusGrLabel})` : ""}
+                          {finding.corpusGrNumber
+                            ? ` · ${finding.corpusGrNumber}`
+                            : ""}
+                        </p>
+                        <p className="text-sm text-amber-950 leading-relaxed">
+                          {finding.corpusExcerpt}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               <div>
                 <div className="flex items-center gap-2 mb-3">
@@ -356,9 +455,14 @@ function InspectorDrawer({
                     Detailed AI Analysis
                   </h3>
                 </div>
-                <div className={`rounded-2xl p-4 border ${cfg.border} ${cfg.bg}`}>
+                <div
+                  className={`rounded-2xl p-4 border ${cfg.border} ${cfg.bg}`}
+                >
                   <div className="flex items-start gap-2 mb-2">
-                    <Icon size={14} className={`${cfg.color} mt-0.5 flex-shrink-0`} />
+                    <Icon
+                      size={14}
+                      className={`${cfg.color} mt-0.5 flex-shrink-0`}
+                    />
                     <p className="text-sm text-[#374151] leading-relaxed">
                       {finding.analysis}
                     </p>
@@ -399,7 +503,10 @@ function InspectorDrawer({
                     : "border-[#E5E7EB] text-[#374151] hover:bg-[#F9FAFB]"
                 }`}
               >
-                <Bookmark size={13} fill={bookmarked ? "currentColor" : "none"} />
+                <Bookmark
+                  size={13}
+                  fill={bookmarked ? "currentColor" : "none"}
+                />
                 {bookmarked ? "Saved" : "Save Finding"}
               </button>
             </div>
@@ -461,54 +568,66 @@ function buildNormalizedIndex(original: string): {
 
 function findExactRange(
   original: string,
-  snippet: string
+  snippet: string,
 ): { start: number; end: number } | null {
   const needle = normalizeForMatch(snippet);
   if (!needle) return null;
   const { normalized, normToOrig } = buildNormalizedIndex(original);
-  const idx = normalized.indexOf(needle);
+
+  let idx = normalized.indexOf(needle);
+  if (idx === -1) {
+    // Fall back to case-insensitive match on normalized text
+    idx = normalized.toLowerCase().indexOf(needle.toLowerCase());
+  }
   if (idx === -1) return null;
+
   const start = normToOrig[idx];
   const last = normToOrig[idx + needle.length - 1];
   return { start, end: last + 1 };
 }
 
-function tokenOverlapRatio(a: string, b: string): number {
-  const tokensA = new Set(
-    normalizeForMatch(a)
-      .toLowerCase()
-      .split(" ")
-      .filter(Boolean)
-  );
-  const tokensB = new Set(
-    normalizeForMatch(b)
-      .toLowerCase()
-      .split(" ")
-      .filter(Boolean)
-  );
-  if (tokensA.size === 0 || tokensB.size === 0) return 0;
-  let overlap = 0;
-  for (const t of tokensA) {
-    if (tokensB.has(t)) overlap += 1;
+/** Compute token overlap ratio between paragraph and snippet. */
+function tokenOverlapRatio(paragraphText: string, snippetText: string): number {
+  const normParagraph = normalizeForMatch(paragraphText).toLowerCase();
+  const normSnippet = normalizeForMatch(snippetText).toLowerCase();
+  const paragraphTokens = new Set(normParagraph.split(/\s+/).filter(Boolean));
+  const snippetTokens = normSnippet.split(/\s+/).filter(Boolean);
+
+  if (paragraphTokens.size === 0 || snippetTokens.length === 0) return 0;
+  let overlapCount = 0;
+  for (const token of snippetTokens) {
+    if (paragraphTokens.has(token)) {
+      overlapCount++;
+    }
   }
-  return overlap / Math.max(tokensA.size, tokensB.size);
+  return overlapCount / snippetTokens.length;
 }
 
 type HighlightMatch =
   | { kind: "exact"; paragraphIndex: number; start: number; end: number }
   | { kind: "fuzzy"; paragraphIndex: number };
 
-function findHighlightMatch(paragraphs: string[], snippet: string): HighlightMatch | null {
+function findHighlightMatch(
+  paragraphs: string[],
+  snippet: string,
+): HighlightMatch | null {
   const normSnippet = normalizeForMatch(snippet);
   if (!normSnippet) return null;
 
+  // 1. Try exact substring match first across all paragraphs
   for (let i = 0; i < paragraphs.length; i++) {
     const range = findExactRange(paragraphs[i], snippet);
     if (range) {
-      return { kind: "exact", paragraphIndex: i, start: range.start, end: range.end };
+      return {
+        kind: "exact",
+        paragraphIndex: i,
+        start: range.start,
+        end: range.end,
+      };
     }
   }
 
+  // 2. Fall back to fuzzy match (highest token-overlap ratio)
   let bestIdx = -1;
   let bestScore = 0;
   for (let i = 0; i < paragraphs.length; i++) {
@@ -518,47 +637,51 @@ function findHighlightMatch(paragraphs: string[], snippet: string): HighlightMat
       bestIdx = i;
     }
   }
-  if (bestIdx >= 0 && bestScore >= 0.2) {
+
+  if (bestIdx >= 0 && bestScore > 0) {
     return { kind: "fuzzy", paragraphIndex: bestIdx };
   }
   return null;
 }
 
-function highlightMarkClass(severity: Severity): string {
+function highlightMarkClass(severity?: Severity): string {
   switch (severity) {
     case "high":
-      return "bg-red-200/80 text-red-950 rounded-sm px-0.5 box-decoration-clone";
+      return "bg-red-200/90 text-red-950 rounded px-1 py-0.5 font-medium shadow-sm border-b-2 border-red-500 box-decoration-clone";
     case "medium":
-      return "bg-amber-200/80 text-amber-950 rounded-sm px-0.5 box-decoration-clone";
+      return "bg-amber-200/90 text-amber-950 rounded px-1 py-0.5 font-medium shadow-sm border-b-2 border-amber-500 box-decoration-clone";
     case "low":
-      return "bg-blue-200/80 text-blue-950 rounded-sm px-0.5 box-decoration-clone";
+    default:
+      return "bg-blue-200/90 text-blue-950 rounded px-1 py-0.5 font-medium shadow-sm border-b-2 border-blue-500 box-decoration-clone";
   }
 }
 
-function highlightBlockClass(severity: Severity): string {
+function highlightBlockClass(severity?: Severity): string {
   switch (severity) {
     case "high":
-      return "bg-red-50 outline outline-2 outline-red-300 rounded-sm";
+      return "bg-red-50/80 outline outline-2 outline-red-400/70 rounded-xl p-3 -m-3 transition-all duration-300 shadow-sm";
     case "medium":
-      return "bg-amber-50 outline outline-2 outline-amber-300 rounded-sm";
+      return "bg-amber-50/80 outline outline-2 outline-amber-400/70 rounded-xl p-3 -m-3 transition-all duration-300 shadow-sm";
     case "low":
-      return "bg-blue-50 outline outline-2 outline-blue-300 rounded-sm";
+    default:
+      return "bg-blue-50/80 outline outline-2 outline-blue-400/70 rounded-xl p-3 -m-3 transition-all duration-300 shadow-sm";
   }
 }
 
-/** Subset of Finding fields needed for document highlighting (generic across finding types). */
-type HighlightableFinding = {
+/** Generic interface for findings that can be highlighted in DocumentViewer. */
+export type HighlightableFinding = {
   id: string;
-  /** Text snippet to locate in the draft — sourced from Finding.summary today. */
-  matchedText: string;
-  severity: Severity;
+  matched_text?: string;
+  matchedText?: string;
+  severity?: Severity;
+  location?: string;
 };
 
 function renderHighlightedText(
   text: string,
   match: HighlightMatch | null,
   paragraphIndex: number,
-  severity: Severity
+  severity?: Severity,
 ) {
   if (!match || match.paragraphIndex !== paragraphIndex) {
     return text;
@@ -584,12 +707,13 @@ function DocumentViewer({
   draftText,
   highlightedFinding,
   zoom,
+  scrollTarget,
   scrollKey = 0,
 }: {
   draftText: string;
   highlightedFinding: HighlightableFinding | null;
   zoom: number;
-  /** Bump to re-scroll to the current highlight (e.g. Jump to clause). */
+  scrollTarget?: string | number;
   scrollKey?: number;
 }) {
   const highlightRef = useRef<HTMLDivElement>(null);
@@ -599,23 +723,28 @@ function DocumentViewer({
     : [];
 
   const defaultTexts = DEFAULT_PARAGRAPHS.map((p) =>
-    p.label ? `${p.label}\n${p.text}` : p.text
+    p.label ? `${p.label}\n${p.text}` : p.text,
   );
   const textsForMatch = paragraphs.length > 0 ? paragraphs : defaultTexts;
 
-  const match =
-    highlightedFinding?.matchedText
-      ? findHighlightMatch(textsForMatch, highlightedFinding.matchedText)
-      : null;
+  const snippet =
+    highlightedFinding?.matched_text || highlightedFinding?.matchedText || "";
 
-  // Scroll matched paragraph into view when the selected finding (or jump request) changes
+  const match = snippet
+    ? findHighlightMatch(textsForMatch, snippet)
+    : null;
+
+  // Scroll matched paragraph into view when the selected finding or scrollTarget changes
   useEffect(() => {
-    if (!highlightedFinding?.id) return;
+    if (!highlightedFinding?.id && !scrollTarget) return;
     const t = window.setTimeout(() => {
-      highlightRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      highlightRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
     }, 50);
     return () => window.clearTimeout(t);
-  }, [highlightedFinding?.id, scrollKey]);
+  }, [highlightedFinding?.id, scrollTarget, scrollKey]);
 
   return (
     <div
@@ -633,103 +762,191 @@ function DocumentViewer({
           color: "#1a1a1a",
         }}
       >
-        {paragraphs.length > 0 ? (
-          paragraphs.map((p, idx) => {
-            const isHighlighted = Boolean(highlightedFinding && match?.paragraphIndex === idx);
-            return (
-              <div
-                key={idx}
-                ref={isHighlighted ? highlightRef : undefined}
-                className={`mb-6 text-justify ${
-                  isHighlighted && highlightedFinding
-                    ? highlightBlockClass(highlightedFinding.severity)
-                    : ""
-                }`}
-              >
-                <p className="whitespace-pre-wrap">
-                  {highlightedFinding
-                    ? renderHighlightedText(p, match, idx, highlightedFinding.severity)
-                    : p}
-                </p>
-              </div>
-            );
-          })
-        ) : (
-          DEFAULT_PARAGRAPHS.map((para, idx) => {
-            const isHighlighted = Boolean(highlightedFinding && match?.paragraphIndex === idx);
-            // Match was computed against label+text; re-resolve against body for exact splits
-            let bodyMatch: HighlightMatch | null = null;
-            if (isHighlighted && highlightedFinding && match) {
-              if (match.kind === "exact") {
-                const range = findExactRange(para.text, highlightedFinding.matchedText);
-                bodyMatch = range
-                  ? { kind: "exact", paragraphIndex: idx, start: range.start, end: range.end }
-                  : { kind: "fuzzy", paragraphIndex: idx };
-              } else {
-                bodyMatch = match;
+        {paragraphs.length > 0
+          ? paragraphs.map((p, idx) => {
+              const isHighlighted = Boolean(
+                highlightedFinding && match?.paragraphIndex === idx,
+              );
+              return (
+                <div
+                  key={idx}
+                  ref={isHighlighted ? highlightRef : undefined}
+                  className={`mb-6 text-justify ${
+                    isHighlighted && highlightedFinding
+                      ? highlightBlockClass(highlightedFinding.severity)
+                      : ""
+                  }`}
+                >
+                  <p className="whitespace-pre-wrap">
+                    {highlightedFinding
+                      ? renderHighlightedText(
+                          p,
+                          match,
+                          idx,
+                          highlightedFinding.severity,
+                        )
+                      : p}
+                  </p>
+                </div>
+              );
+            })
+          : DEFAULT_PARAGRAPHS.map((para, idx) => {
+              const isHighlighted = Boolean(
+                highlightedFinding && match?.paragraphIndex === idx,
+              );
+              let bodyMatch: HighlightMatch | null = null;
+              if (isHighlighted && highlightedFinding && match) {
+                if (match.kind === "exact") {
+                  const range = findExactRange(para.text, snippet);
+                  bodyMatch = range
+                    ? {
+                        kind: "exact",
+                        paragraphIndex: idx,
+                        start: range.start,
+                        end: range.end,
+                      }
+                    : { kind: "fuzzy", paragraphIndex: idx };
+                } else {
+                  bodyMatch = match;
+                }
               }
-            }
 
-            return (
-              <div
-                key={para.id}
-                ref={isHighlighted ? highlightRef : undefined}
-                className={`mb-7 ${
-                  isHighlighted && highlightedFinding
-                    ? highlightBlockClass(highlightedFinding.severity)
-                    : ""
-                }`}
-              >
-                {para.type === "header" && (
-                  <div className="text-center mb-10 pb-8 border-b-2 border-[#1a1a1a]">
-                    {para.text.split("\n").map((line, i) => (
-                      <p
-                        key={i}
-                        className={
-                          i < 2
-                            ? "font-bold text-base uppercase tracking-widest"
-                            : "text-sm text-[#374151]"
-                        }
-                      >
-                        {line}
+              return (
+                <div
+                  key={para.id}
+                  ref={isHighlighted ? highlightRef : undefined}
+                  className={`mb-7 ${
+                    isHighlighted && highlightedFinding
+                      ? highlightBlockClass(highlightedFinding.severity)
+                      : ""
+                  }`}
+                >
+                  {para.type === "header" && (
+                    <div className="text-center mb-10 pb-8 border-b-2 border-[#1a1a1a]">
+                      {para.text.split("\n").map((line, i) => (
+                        <p
+                          key={i}
+                          className={
+                            i < 2
+                              ? "font-bold text-base uppercase tracking-widest"
+                              : "text-sm text-[#374151]"
+                          }
+                        >
+                          {line}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                  {para.type === "section" && (
+                    <div className="mb-4">
+                      {para.label && (
+                        <p className="font-bold uppercase mb-2">{para.label}</p>
+                      )}
+                      <p>
+                        {highlightedFinding
+                          ? renderHighlightedText(
+                              para.text,
+                              bodyMatch,
+                              idx,
+                              highlightedFinding.severity,
+                            )
+                          : para.text}
                       </p>
-                    ))}
-                  </div>
-                )}
-                {para.type === "section" && (
-                  <div className="mb-4">
-                    {para.label && (
-                      <p className="font-bold uppercase mb-2">{para.label}</p>
-                    )}
-                    <p>
+                    </div>
+                  )}
+                  {(para.type === "subject" || para.type === "filler") && (
+                    <p
+                      className={
+                        para.type === "subject" ? "mb-6 font-medium" : "mb-4"
+                      }
+                    >
                       {highlightedFinding
                         ? renderHighlightedText(
                             para.text,
                             bodyMatch,
                             idx,
-                            highlightedFinding.severity
+                            highlightedFinding.severity,
                           )
                         : para.text}
                     </p>
-                  </div>
-                )}
-                {(para.type === "subject" || para.type === "filler") && (
-                  <p className={para.type === "subject" ? "mb-6 font-medium" : "mb-4"}>
-                    {highlightedFinding
-                      ? renderHighlightedText(
-                          para.text,
-                          bodyMatch,
-                          idx,
-                          highlightedFinding.severity
-                        )
-                      : para.text}
-                  </p>
-                )}
-              </div>
-            );
-          })
-        )}
+                  )}
+                </div>
+              );
+            })}
       </div>
+    </div>
+  );
+}
+
+// ─── Template accuracy indicator ──────────────────────────────────────────────
+
+function templateScoreColor(score: number): {
+  bar: string;
+  text: string;
+  bg: string;
+  border: string;
+} {
+  if (score >= 80) {
+    return {
+      bar: "bg-green-500",
+      text: "text-green-700",
+      bg: "bg-green-50",
+      border: "border-green-200",
+    };
+  }
+  if (score >= 50) {
+    return {
+      bar: "bg-amber-500",
+      text: "text-amber-700",
+      bg: "bg-amber-50",
+      border: "border-amber-200",
+    };
+  }
+  return {
+    bar: "bg-red-500",
+    text: "text-red-700",
+    bg: "bg-red-50",
+    border: "border-red-200",
+  };
+}
+
+function TemplateAccuracyBar({
+  templateCheck,
+}: {
+  templateCheck: TemplateCheckSection | null;
+}) {
+  if (!templateCheck) return null;
+
+  const score = templateCheck.accuracy_score;
+  const colors = templateScoreColor(score);
+
+  return (
+    <div
+      className={`px-4 py-3 border-b border-[#E5E7EB] ${colors.bg} flex-shrink-0`}
+    >
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <LayoutTemplate size={14} className={colors.text} />
+          <span className="text-xs font-semibold text-[#374151]">
+            Template Accuracy
+          </span>
+        </div>
+        <span className={`text-sm font-bold ${colors.text}`}>
+          {score.toFixed(1)}%
+        </span>
+      </div>
+      <div className="h-2 bg-white/70 rounded-full overflow-hidden border border-white/50">
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${colors.bar}`}
+          style={{ width: `${Math.min(100, Math.max(0, score))}%` }}
+        />
+      </div>
+      <p className="text-[10px] text-[#6B7280] mt-1.5">
+        {templateCheck.sections_correct}/{templateCheck.total_required_sections}{" "}
+        required sections correct
+        {templateCheck.violations.length > 0 &&
+          ` · ${templateCheck.violations.length} structural issue${templateCheck.violations.length === 1 ? "" : "s"}`}
+      </p>
     </div>
   );
 }
@@ -745,20 +962,145 @@ function SummaryBar({ findings }: { findings: Finding[] }) {
   return (
     <div className="grid grid-cols-4 gap-3 p-4 border-b border-[#E5E7EB] bg-white flex-shrink-0">
       {[
-        { label: "Total Findings", value: total, icon: BarChart3, color: "text-[#374151]", bg: "bg-[#F9FAFB]", border: "border-[#E5E7EB]" },
-        { label: "High Severity", value: high, icon: AlertCircle, color: "text-red-600", bg: "bg-red-50", border: "border-red-100" },
-        { label: "Medium Severity", value: med, icon: AlertTriangle, color: "text-amber-600", bg: "bg-amber-50", border: "border-amber-100" },
-        { label: "Low Severity", value: low, icon: Info, color: "text-blue-600", bg: "bg-blue-50", border: "border-blue-100" },
+        {
+          label: "Total Findings",
+          value: total,
+          icon: BarChart3,
+          color: "text-[#374151]",
+          bg: "bg-[#F9FAFB]",
+          border: "border-[#E5E7EB]",
+        },
+        {
+          label: "High Severity",
+          value: high,
+          icon: AlertCircle,
+          color: "text-red-600",
+          bg: "bg-red-50",
+          border: "border-red-100",
+        },
+        {
+          label: "Medium Severity",
+          value: med,
+          icon: AlertTriangle,
+          color: "text-amber-600",
+          bg: "bg-amber-50",
+          border: "border-amber-100",
+        },
+        {
+          label: "Low Severity",
+          value: low,
+          icon: Info,
+          color: "text-blue-600",
+          bg: "bg-blue-50",
+          border: "border-blue-100",
+        },
       ].map(({ label, value, icon: Icon, color, bg, border }) => (
-        <div key={label} className={`rounded-xl p-3 border ${bg} ${border} flex items-center gap-3`}>
-          <div className={`w-8 h-8 rounded-lg ${bg} flex items-center justify-center flex-shrink-0 border ${border}`}>
+        <div
+          key={label}
+          className={`rounded-xl p-3 border ${bg} ${border} flex items-center gap-3`}
+        >
+          <div
+            className={`w-8 h-8 rounded-lg ${bg} flex items-center justify-center flex-shrink-0 border ${border}`}
+          >
             <Icon size={15} className={color} />
           </div>
           <div>
-            <p className={`text-xl font-bold ${color} leading-none mb-0.5`}>{value}</p>
+            <p className={`text-xl font-bold ${color} leading-none mb-0.5`}>
+              {value}
+            </p>
             <p className="text-xs text-[#9CA3AF] font-medium">{label}</p>
           </div>
         </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Terminology helpers ──────────────────────────────────────────────────────
+
+function glossaryUnavailableMessage(reason?: string | null): string {
+  if (reason === "api_quota_exhausted") {
+    return "Terminology check unavailable — API quota exhausted, try again shortly.";
+  }
+  return "Terminology check unavailable — please try again shortly.";
+}
+
+function TerminologyFindingCard({ finding }: { finding: GlossaryFinding }) {
+  const pct = Math.round(finding.confidence * 100);
+  return (
+    <div className="bg-white rounded-2xl border border-[#E5E7EB] p-4 hover:shadow-sm transition-shadow">
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <p className="text-xs font-semibold text-[#111827] font-mono">
+          “{finding.text_found}”
+        </p>
+        <span className="text-[10px] font-medium text-[#6B7280] bg-[#F3F4F6] px-2 py-0.5 rounded-md flex-shrink-0">
+          {pct}% conf.
+        </span>
+      </div>
+      <p className="text-xs text-[#6B7280] mb-2 leading-relaxed">
+        Use:{" "}
+        <span className="font-medium text-[#2563EB]">{finding.canonical_term}</span>
+      </p>
+      <p className="text-xs text-[#374151] mb-2">{finding.reason}</p>
+      <p className="text-[10px] text-[#9CA3AF] font-mono bg-[#F9FAFB] rounded-lg px-2 py-1.5 border border-[#F3F4F6] leading-relaxed">
+        …{finding.context_snippet}…
+      </p>
+    </div>
+  );
+}
+
+function TerminologyPanel({ glossaryCheck }: { glossaryCheck: GlossaryCheckSection | null }) {
+  if (!glossaryCheck) {
+    return (
+      <div className="text-center py-10">
+        <p className="text-sm text-[#9CA3AF]">No terminology data.</p>
+      </div>
+    );
+  }
+
+  if (glossaryCheck.status === "unavailable") {
+    return (
+      <div className="bg-white rounded-2xl border border-[#E5E7EB] p-6 text-center">
+        <div className="w-10 h-10 rounded-xl bg-[#F3F4F6] text-[#6B7280] flex items-center justify-center mx-auto mb-3">
+          <Languages size={18} />
+        </div>
+        <p className="text-sm text-[#6B7280] leading-relaxed">
+          {glossaryUnavailableMessage(glossaryCheck.reason)}
+        </p>
+      </div>
+    );
+  }
+
+  if (glossaryCheck.status === "error") {
+    return (
+      <div className="bg-white rounded-2xl border border-amber-200 p-6 text-center">
+        <p className="text-sm text-amber-800 leading-relaxed">
+          Terminology check could not be completed. Other analysis results are still valid.
+        </p>
+      </div>
+    );
+  }
+
+  if (glossaryCheck.findings.length === 0) {
+    return (
+      <div className="text-center py-12 px-4 bg-white rounded-2xl border border-green-200">
+        <div className="w-12 h-12 rounded-2xl bg-green-50 text-green-600 flex items-center justify-center mx-auto mb-3 border border-green-100">
+          <CheckCircle2 size={24} />
+        </div>
+        <h3 className="text-sm font-semibold text-[#111827] mb-1">
+          No Terminology Issues
+        </h3>
+        <p className="text-xs text-[#6B7280] leading-relaxed">
+          Draft text matches the standard bilingual glossary for flagged terms.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {glossaryCheck.findings.map((finding, idx) => (
+        <TerminologyFindingCard key={`${finding.text_found}-${idx}`} finding={finding} />
       ))}
     </div>
   );
@@ -774,11 +1116,13 @@ function ProcessingView({
 }: {
   draftText: string;
   fileName: string;
-  onComplete: (result: ConflictFinding) => void;
+  onComplete: (result: DraftAnalysisResponse) => void;
   onError: () => void;
 }) {
   const [currentStep, setCurrentStep] = useState(0);
-  const [conflictResult, setConflictResult] = useState<ConflictFinding | null>(null);
+  const [analysisResult, setAnalysisResult] = useState<DraftAnalysisResponse | null>(
+    null,
+  );
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
@@ -787,15 +1131,16 @@ function ProcessingView({
     setCurrentStep(0);
     setDone(false);
 
-    // Call real FastAPI backend POST /reasoning/conflict
-    checkConflict(draftText)
+    analyzeDraft(draftText)
       .then((result) => {
-        setConflictResult(result);
+        setAnalysisResult(result);
         setCurrentStep(PROCESSING_STEPS.length - 1);
         setDone(true);
       })
       .catch((err: ApiError | Error) => {
-        setErrorMsg(err.message || "Failed to connect to conflict reasoning API.");
+        setErrorMsg(
+          err.message || "Failed to connect to the analysis API.",
+        );
       });
   }, [draftText]);
 
@@ -803,13 +1148,18 @@ function ProcessingView({
     runAnalysis();
   }, [runAnalysis]);
 
-  // Visual step progress timer
+  // Advance through early pipeline steps only while the API call is in flight
   useEffect(() => {
-    if (!errorMsg && currentStep < PROCESSING_STEPS.length - 1) {
-      const t = setTimeout(() => setCurrentStep((s) => s + 1), 900);
-      return () => clearTimeout(t);
-    }
-  }, [currentStep, errorMsg]);
+    if (errorMsg || done || currentStep >= 2) return;
+    const t = setTimeout(() => setCurrentStep((s) => s + 1), 1400);
+    return () => clearTimeout(t);
+  }, [currentStep, errorMsg, done]);
+
+  // Jump to final steps when API returns
+  useEffect(() => {
+    if (!done) return;
+    setCurrentStep(PROCESSING_STEPS.length - 1);
+  }, [done]);
 
   if (errorMsg) {
     return (
@@ -819,7 +1169,7 @@ function ProcessingView({
             <AlertCircle size={24} />
           </div>
           <h2 className="text-base font-semibold text-[#111827] mb-2">
-            Conflict Analysis Failed
+            Analysis Failed
           </h2>
           <p className="text-xs text-[#6B7280] mb-6 leading-relaxed bg-red-50 p-3 rounded-xl border border-red-100 font-mono text-left overflow-x-auto">
             {errorMsg}
@@ -866,7 +1216,8 @@ function ProcessingView({
           <div className="px-8 py-6 space-y-5">
             {PROCESSING_STEPS.map((step, idx) => {
               const Icon = step.icon;
-              const isStepDone = idx < currentStep || (idx === currentStep && done);
+              const isStepDone =
+                idx < currentStep || (idx === currentStep && done);
               const isActive = idx === currentStep && !done;
               return (
                 <div key={step.id} className="flex items-start gap-3.5">
@@ -875,8 +1226,8 @@ function ProcessingView({
                       isStepDone
                         ? "bg-[#F0FDF4] text-[#22C55E]"
                         : isActive
-                        ? "bg-[#EFF6FF] text-[#2563EB]"
-                        : "bg-[#F9FAFB] text-[#D1D5DB]"
+                          ? "bg-[#EFF6FF] text-[#2563EB]"
+                          : "bg-[#F9FAFB] text-[#D1D5DB]"
                     }`}
                   >
                     {isActive ? (
@@ -892,8 +1243,8 @@ function ProcessingView({
                           isStepDone
                             ? "text-[#22C55E]"
                             : isActive
-                            ? "text-[#111827]"
-                            : "text-[#D1D5DB]"
+                              ? "text-[#111827]"
+                              : "text-[#D1D5DB]"
                         }`}
                       >
                         {step.label}
@@ -909,7 +1260,11 @@ function ProcessingView({
                     </div>
                     <p
                       className={`text-xs transition-colors duration-300 ${
-                        isStepDone ? "text-[#22C55E]/70" : isActive ? "text-[#6B7280]" : "text-[#E5E7EB]"
+                        isStepDone
+                          ? "text-[#22C55E]/70"
+                          : isActive
+                            ? "text-[#6B7280]"
+                            : "text-[#E5E7EB]"
                       }`}
                     >
                       {step.sub}
@@ -917,9 +1272,15 @@ function ProcessingView({
                     <div className="h-1 bg-[#F3F4F6] rounded-full overflow-hidden mt-2">
                       <div
                         className={`h-full rounded-full transition-all duration-700 ${
-                          isStepDone ? "bg-[#22C55E]" : isActive ? "bg-[#2563EB]" : ""
+                          isStepDone
+                            ? "bg-[#22C55E]"
+                            : isActive
+                              ? "bg-[#2563EB]"
+                              : ""
                         }`}
-                        style={{ width: isStepDone ? "100%" : isActive ? "55%" : "0%" }}
+                        style={{
+                          width: isStepDone ? "100%" : isActive ? "55%" : "0%",
+                        }}
                       />
                     </div>
                   </div>
@@ -928,10 +1289,10 @@ function ProcessingView({
             })}
           </div>
 
-          {done && conflictResult && (
+          {done && analysisResult && (
             <div className="px-8 pb-8">
               <button
-                onClick={() => onComplete(conflictResult)}
+                onClick={() => onComplete(analysisResult)}
                 className="w-full py-3 rounded-xl bg-[#2563EB] text-white text-sm font-semibold hover:bg-[#1D4ED8] active:bg-[#1E40AF] transition-all duration-200 flex items-center justify-center gap-2 shadow-sm"
               >
                 <Eye size={15} />
@@ -943,10 +1304,199 @@ function ProcessingView({
         </div>
 
         <p className="text-xs text-[#9CA3AF] text-center mt-4">
-          Cross-referencing statutory database & Neo4j graph · Powered by FastAPI Q&A Reasoning Engine
+          Cross-referencing statutory database & Neo4j graph · Powered by
+          FastAPI Q&A Reasoning Engine
         </p>
       </div>
     </div>
+  );
+}
+
+// ─── GR structure rules (homepage) ────────────────────────────────────────────
+
+const ANALYSIS_FEATURES = [
+  {
+    icon: Shield,
+    label: "Conflict Detection",
+    desc: "Cross-references draft clauses against 1,840+ statutory provisions and Neo4j citation graphs.",
+  },
+  {
+    icon: LayoutTemplate,
+    label: "Template Compliance",
+    desc: "Rule-based structure check with accuracy score — flags missing or misordered GR sections.",
+  },
+  {
+    icon: Languages,
+    label: "Terminology Check",
+    desc: "Bilingual glossary review for non-standard Marathi and English terms in operative text.",
+  },
+  {
+    icon: BarChart3,
+    label: "Severity Analysis",
+    desc: "Findings ranked High / Medium / Low with confidence metrics and filterable summaries.",
+  },
+  {
+    icon: Eye,
+    label: "Clause Highlighting",
+    desc: "Click any finding to jump to and highlight the matching passage in the document viewer.",
+  },
+  {
+    icon: CheckCircle2,
+    label: "Actionable Guidance",
+    desc: "Structured recommendations with affected GR excerpts and corpus comparisons.",
+  },
+] as const;
+
+function GrStructureRulesSection({ compact = false }: { compact?: boolean }) {
+  return (
+    <section className={compact ? "w-full" : "px-6 pb-8 max-w-3xl mx-auto w-full"}>
+      <div className="bg-white rounded-xl border border-[#E5E7EB] shadow-sm overflow-hidden h-full">
+        <div className={`border-b border-[#F3F4F6] bg-[#F9FAFB] ${compact ? "px-3 py-3" : "px-6 py-5"}`}>
+          <div className="flex items-start gap-2">
+            <div
+              className={`rounded-lg bg-[#EFF6FF] flex items-center justify-center flex-shrink-0 ${
+                compact ? "w-7 h-7" : "w-9 h-9 rounded-xl"
+              }`}
+            >
+              <LayoutTemplate
+                size={compact ? 14 : 18}
+                className="text-[#2563EB]"
+              />
+            </div>
+            <div className="min-w-0">
+              <h2
+                className={`font-semibold text-[#111827] ${compact ? "text-xs" : "text-sm"}`}
+              >
+                GR Structure Rules
+              </h2>
+              <p
+                className={`text-[#6B7280] mt-0.5 leading-relaxed ${
+                  compact ? "text-[10px]" : "text-xs"
+                }`}
+              >
+                Required section order for Maharashtra resolutions.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <ol className="divide-y divide-[#F3F4F6]">
+          {GR_TEMPLATE_RULES.map((rule) => (
+            <li
+              key={rule.id}
+              className={`flex gap-2.5 ${compact ? "px-3 py-2.5" : "px-6 py-4"}`}
+            >
+              <span
+                className={`rounded-full bg-[#111827] text-white font-bold flex items-center justify-center flex-shrink-0 ${
+                  compact ? "w-5 h-5 text-[9px]" : "w-7 h-7 text-xs"
+                }`}
+              >
+                {rule.order}
+              </span>
+              <div className="flex-1 min-w-0">
+                <div className="flex flex-wrap items-center gap-1 mb-0.5">
+                  <h3
+                    className={`font-semibold text-[#111827] ${
+                      compact ? "text-[11px]" : "text-sm"
+                    }`}
+                  >
+                    {rule.label}
+                  </h3>
+                  {!compact && (
+                    <span className="text-xs text-[#6B7280] font-mono">
+                      {rule.labelMr}
+                    </span>
+                  )}
+                  <span
+                    className={`font-semibold rounded ${
+                      compact ? "text-[9px] px-1 py-px" : "text-[10px] px-2 py-0.5 rounded-md"
+                    } ${
+                      rule.required
+                        ? "bg-red-50 text-red-700 border border-red-100"
+                        : "bg-[#F3F4F6] text-[#6B7280] border border-[#E5E7EB]"
+                    }`}
+                  >
+                    {rule.required ? "Req." : "Opt."}
+                  </span>
+                </div>
+                {compact ? (
+                  <p className="text-[10px] text-[#6B7280] leading-snug line-clamp-2">
+                    {rule.description}
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-xs text-[#6B7280] leading-relaxed mb-2">
+                      {rule.description}
+                    </p>
+                    <ul className="space-y-1">
+                      {rule.detectionHints.map((hint) => (
+                        <li
+                          key={hint}
+                          className="text-[11px] text-[#374151] flex items-start gap-1.5"
+                        >
+                          <span className="text-[#9CA3AF] mt-0.5">·</span>
+                          <span>{hint}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    {rule.required && (
+                      <p className="text-[10px] text-[#9CA3AF] mt-2">
+                        Missing: {rule.severityMissing} · Misordered:{" "}
+                        {rule.severityMisordered}
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            </li>
+          ))}
+        </ol>
+
+        <div
+          className={`bg-[#F9FAFB] border-t border-[#F3F4F6] ${
+            compact ? "px-3 py-2" : "px-6 py-3"
+          }`}
+        >
+          <p
+            className={`text-[#6B7280] leading-snug ${
+              compact ? "text-[9px]" : "text-[11px]"
+            }`}
+          >
+            {GR_TEMPLATE_SCORING_NOTE}
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function AnalysisFeaturesSection() {
+  return (
+    <section className="w-full">
+      <div className="mb-5">
+        <h2 className="text-sm font-semibold text-[#111827] mb-1">
+          Analysis Capabilities
+        </h2>
+        <p className="text-xs text-[#6B7280] leading-relaxed max-w-lg">
+          Upload a Government Resolution to run conflict, template, and terminology
+          checks in parallel against the statutory database.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {ANALYSIS_FEATURES.map(({ icon: Icon, label, desc }) => (
+          <div
+            key={label}
+            className="bg-white rounded-xl border border-[#E5E7EB] p-4 text-left hover:shadow-md hover:-translate-y-0.5 transition-all duration-200"
+          >
+            <div className="w-7 h-7 rounded-lg bg-[#EFF6FF] flex items-center justify-center mb-3">
+              <Icon size={14} className="text-[#2563EB]" />
+            </div>
+            <p className="text-xs font-semibold text-[#111827] mb-1">{label}</p>
+            <p className="text-[11px] text-[#9CA3AF] leading-relaxed">{desc}</p>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -962,32 +1512,34 @@ function UploadCard({
   const [fileName, setFileName] = useState<string | null>(null);
   const [fileText, setFileText] = useState<string>("");
   const [pastedText, setPastedText] = useState<string>("");
+  const [extractError, setExtractError] = useState<string | null>(null);
+  const [extracting, setExtracting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const processFile = useCallback((file: File) => {
+  const processFile = useCallback(async (file: File) => {
     setFileName(file.name);
-    // PDF text extraction isn't natively built-in without heavy dependencies;
-    // for now we attempt FileReader text extraction or fallback to document text wrapper.
-    if (file.name.endsWith(".pdf") || file.type.includes("pdf")) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const text = e.target?.result as string;
-        if (text && text.length > 50 && !text.includes("\u0000")) {
-          setFileText(text);
-        } else {
-          setFileText(
-            `[PDF Document: ${file.name}]\n\n` + SAMPLE_DRAFT_TEXT
-          );
-        }
-      };
-      reader.readAsText(file);
-    } else {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const text = (e.target?.result as string) || SAMPLE_DRAFT_TEXT;
+    setExtractError(null);
+    setExtracting(true);
+    try {
+      if (isPdfFile(file)) {
+        const text = await extractTextFromPdf(file);
         setFileText(text);
-      };
-      reader.readAsText(file);
+      } else {
+        const text = await file.text();
+        if (!text.trim()) {
+          throw new Error("File is empty or unreadable.");
+        }
+        setFileText(text);
+      }
+    } catch (err: unknown) {
+      setFileText("");
+      setExtractError(
+        err instanceof Error
+          ? err.message
+          : "Could not read file. Paste the draft text instead.",
+      );
+    } finally {
+      setExtracting(false);
     }
   }, []);
 
@@ -997,12 +1549,9 @@ function UploadCard({
       setDragging(false);
       if (e.dataTransfer.files && e.dataTransfer.files[0]) {
         processFile(e.dataTransfer.files[0]);
-      } else {
-        setFileName("Draft_Resolution_2024.txt");
-        setFileText(SAMPLE_DRAFT_TEXT);
       }
     },
-    [processFile]
+    [processFile],
   );
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1012,18 +1561,28 @@ function UploadCard({
   };
 
   const handleAnalyse = () => {
+    setExtractError(null);
     if (mode === "paste") {
-      const textToUse = pastedText.trim() || SAMPLE_DRAFT_TEXT;
+      const textToUse = pastedText.trim();
+      if (!textToUse) {
+        setExtractError("Paste draft text or load the Maharashtra sample draft.");
+        return;
+      }
       onUpload(textToUse, "Pasted_Draft_Resolution.txt");
     } else {
-      const textToUse = fileText.trim() || SAMPLE_DRAFT_TEXT;
-      const nameToUse = fileName || "National_Green_Infrastructure_Resolution_2024.pdf";
-      onUpload(textToUse, nameToUse);
+      if (!fileText.trim()) {
+        setExtractError("Upload a document with readable text, or switch to paste mode.");
+        return;
+      }
+      onUpload(
+        fileText.trim(),
+        fileName || MAHARASHTRA_SAMPLE_FILENAME,
+      );
     }
   };
 
   return (
-    <div className="px-6 pt-6">
+    <div className="w-full">
       <input
         type="file"
         ref={fileInputRef}
@@ -1058,6 +1617,12 @@ function UploadCard({
         </button>
       </div>
 
+      {extractError && (
+        <div className="mb-3 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+          {extractError}
+        </div>
+      )}
+
       {mode === "paste" ? (
         <div className="bg-white rounded-2xl border border-[#E5E7EB] p-5 shadow-sm">
           <label className="block text-xs font-semibold text-[#111827] mb-2">
@@ -1072,10 +1637,13 @@ function UploadCard({
           />
           <div className="flex items-center justify-between">
             <button
-              onClick={() => setPastedText(SAMPLE_DRAFT_TEXT)}
+              onClick={() => {
+                setPastedText(MAHARASHTRA_SAMPLE_DRAFT);
+                setExtractError(null);
+              }}
               className="text-xs text-[#2563EB] font-medium hover:underline"
             >
-              Load Sample Conflicts Draft
+              Load Maharashtra Sample Draft
             </button>
             <button
               onClick={handleAnalyse}
@@ -1092,8 +1660,8 @@ function UploadCard({
             dragging
               ? "border-[#2563EB] bg-[#EFF6FF] scale-[1.005]"
               : fileName
-              ? "border-[#22C55E] bg-[#F0FDF4]"
-              : "border-[#E5E7EB] bg-white hover:border-[#BFDBFE] hover:bg-[#F8FAFC]"
+                ? "border-[#22C55E] bg-[#F0FDF4]"
+                : "border-[#E5E7EB] bg-white hover:border-[#BFDBFE] hover:bg-[#F8FAFC]"
           }`}
           onDragOver={(e) => {
             e.preventDefault();
@@ -1106,22 +1674,35 @@ function UploadCard({
             <div className="flex items-center justify-between px-6 py-4">
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-xl bg-[#DCFCE7] flex items-center justify-center">
-                  <FileText size={18} className="text-[#22C55E]" />
+                  {extracting ? (
+                    <Loader2 size={18} className="text-[#2563EB] animate-spin" />
+                  ) : (
+                    <FileText size={18} className="text-[#22C55E]" />
+                  )}
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-[#111827]">{fileName}</p>
+                  <p className="text-sm font-semibold text-[#111827]">
+                    {fileName}
+                  </p>
                   <p className="text-xs text-[#6B7280] mt-0.5">
-                    {fileText.length > 0 ? `${fileText.length} characters` : "Document text ready for analysis"}
+                    {extracting
+                      ? "Extracting text from document…"
+                      : fileText.length > 0
+                        ? `${fileText.length} characters`
+                        : "No text extracted — try paste mode"}
                   </p>
                 </div>
               </div>
               <div className="flex items-center gap-3">
-                <span className="flex items-center gap-1.5 text-xs font-semibold text-[#22C55E]">
-                  <CheckCircle2 size={13} /> Loaded
-                </span>
+                {!extracting && fileText.length > 0 && (
+                  <span className="flex items-center gap-1.5 text-xs font-semibold text-[#22C55E]">
+                    <CheckCircle2 size={13} /> Loaded
+                  </span>
+                )}
                 <button
                   onClick={handleAnalyse}
-                  className="px-4 py-2.5 rounded-xl bg-[#2563EB] text-white text-sm font-semibold hover:bg-[#1D4ED8] transition-colors flex items-center gap-2"
+                  disabled={extracting || !fileText.trim()}
+                  className="px-4 py-2.5 rounded-xl bg-[#2563EB] text-white text-sm font-semibold hover:bg-[#1D4ED8] transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Shield size={14} />
                   Analyse Document
@@ -1176,9 +1757,20 @@ function UploadCard({
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>("upload");
-  const [draftText, setDraftText] = useState<string>(SAMPLE_DRAFT_TEXT);
-  const [fileName, setFileName] = useState<string>("National_Green_Infrastructure_Resolution_2024.pdf");
-  const [conflictResult, setConflictResult] = useState<ConflictFinding | null>(null);
+  const [draftText, setDraftText] = useState<string>("");
+  const [fileName, setFileName] = useState<string>("");
+  const [conflictResult, setConflictResult] = useState<ConflictFinding | null>(
+    null,
+  );
+  const [glossaryCheck, setGlossaryCheck] = useState<GlossaryCheckSection | null>(
+    null,
+  );
+  const [templateCheck, setTemplateCheck] = useState<TemplateCheckSection | null>(
+    null,
+  );
+  const [reviewPanel, setReviewPanel] = useState<
+    "conflicts" | "terminology" | "template"
+  >("conflicts");
 
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
   const [scrollKey, setScrollKey] = useState(0);
@@ -1189,22 +1781,58 @@ export default function App() {
   const [filterSeverity, setFilterSeverity] = useState<Severity | "all">("all");
   const [bookmarks, setBookmarks] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<string | null>(null);
-  const [backendStatus, setBackendStatus] = useState<{ checked: boolean; ok: boolean; msg?: string }>({
+  const [backendStatus, setBackendStatus] = useState<{
+    checked: boolean;
+    reachable: boolean;
+    degraded: boolean;
+    msg?: string;
+  }>({
     checked: false,
-    ok: true,
+    reachable: true,
+    degraded: false,
   });
 
   // Non-blocking initial health check on app load
   useEffect(() => {
     checkHealth()
       .then((res) => {
-        setBackendStatus({ checked: true, ok: res.db !== false });
-      })
-      .catch((err: Error) => {
+        const warnings: string[] = [];
+        if (!res.db) warnings.push("Postgres unavailable");
+        if (!res.neo4j) {
+          warnings.push(
+            res.neo4j_error
+              ? `Neo4j: ${res.neo4j_error}`
+              : "Neo4j graph unavailable",
+          );
+        }
+        if (res.embeddings && !res.embeddings.ok) {
+          const emb = res.embeddings;
+          warnings.push(
+            `Embeddings incomplete (${emb.count}/${emb.total_documents} docs embedded)`,
+          );
+        }
+        if (res.store_sync && !res.store_sync.in_sync) {
+          warnings.push(
+            (res.store_sync.warnings || []).join(" · ") ||
+              "Postgres/Neo4j store sync drift detected",
+          );
+        }
         setBackendStatus({
           checked: true,
-          ok: false,
-          msg: "FastAPI Backend is unreachable at http://localhost:8000. Ensure uvicorn server is running.",
+          reachable: true,
+          degraded: res.status === "degraded" || warnings.length > 0,
+          msg:
+            warnings.length > 0
+              ? warnings.join(" · ")
+              : undefined,
+        });
+      })
+      .catch(() => {
+        setBackendStatus({
+          checked: true,
+          reachable: false,
+          degraded: true,
+          msg: "FastAPI backend is unreachable at http://localhost:8000. Ensure uvicorn is running.",
         });
       });
   }, []);
@@ -1219,10 +1847,17 @@ export default function App() {
     setPhase("processing");
   };
 
-  const handleProcessingComplete = (result: ConflictFinding) => {
-    setConflictResult(result);
+  const handleProcessingComplete = (analysis: DraftAnalysisResponse) => {
+    if (analysis.conflict_check.status === "ok" && analysis.conflict_check.result) {
+      setConflictResult(analysis.conflict_check.result);
+    } else {
+      setConflictResult(null);
+    }
+    setGlossaryCheck(analysis.glossary_check);
+    setTemplateCheck(analysis.template_check);
+    setReviewPanel("conflicts");
     setPhase("review");
-    showToast("Conflict analysis complete");
+    showToast("Draft analysis complete");
   };
 
   const handleFindingClick = (finding: Finding) => {
@@ -1253,9 +1888,14 @@ export default function App() {
   };
 
   // Derive findings from real ConflictFinding response using adapter
-  const findings: Finding[] = conflictResult
+  const conflictFindings: Finding[] = conflictResult
     ? mapConflictFindingToFindings(conflictResult)
     : [];
+
+  const templateFindings: Finding[] = mapTemplateFindingsToFindings(templateCheck);
+
+  const findings: Finding[] =
+    reviewPanel === "template" ? templateFindings : conflictFindings;
 
   const filteredFindings =
     filterSeverity === "all"
@@ -1268,25 +1908,30 @@ export default function App() {
       style={{ fontFamily: "Inter, sans-serif" }}
     >
       {/* Non-blocking health warning banner */}
-      {backendStatus.checked && !backendStatus.ok && (
+      {backendStatus.checked && (!backendStatus.reachable || backendStatus.degraded) && (
         <div className="bg-amber-500 text-white text-xs font-semibold py-1.5 px-4 text-center flex items-center justify-center gap-2 z-50">
           <AlertTriangle size={13} />
-          {backendStatus.msg || "FastAPI backend unreachable"}
+          {backendStatus.msg ||
+            (backendStatus.reachable
+              ? "Backend is degraded — retrieval quality may be reduced"
+              : "FastAPI backend unreachable")}
         </div>
       )}
 
       {/* ── Top Navigation ── */}
-      <header className="h-14 bg-white border-b border-[#E5E7EB] flex items-center px-5 gap-4 flex-shrink-0 z-30">
-        <div className="flex items-center gap-2.5 mr-4">
-          <div className="w-7 h-7 rounded-lg bg-[#2563EB] flex items-center justify-center">
-            <Shield size={14} className="text-white" />
-          </div>
+      <header className="h-16 bg-white border-b border-[#E5E7EB] flex items-center px-5 gap-4 flex-shrink-0 z-30">
+        <div className="flex items-center gap-3 mr-4">
+          <img
+            src={maharashtraSeal}
+            alt="Seal of Maharashtra"
+            className="w-10 h-10 object-contain flex-shrink-0"
+          />
           <div className="flex items-baseline gap-1.5">
             <span className="text-sm font-bold text-[#111827] tracking-tight">
-              ResolutionReview
+            निर्णय सहाय्यता
             </span>
             <span className="hidden xl:block text-xs text-[#9CA3AF] font-medium">
-              · Government of India
+              · Government of Maharashtra
             </span>
           </div>
         </div>
@@ -1294,7 +1939,10 @@ export default function App() {
         {/* Global search */}
         <div className="flex-1 max-w-xs">
           <div className="relative">
-            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#9CA3AF]" />
+            <Search
+              size={13}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-[#9CA3AF]"
+            />
             <input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -1310,9 +1958,16 @@ export default function App() {
           <div className="hidden lg:flex items-center gap-2 text-xs text-[#6B7280] border-r border-[#E5E7EB] pr-4 mr-1">
             <TrendingUp size={13} className="text-[#22C55E]" />
             <span>
-              <span className="font-semibold text-[#111827]">{findings.length}</span> findings · analyzed{" "}
               <span className="font-semibold text-[#111827]">
-                {new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+                {findings.length}
+              </span>{" "}
+              findings · analyzed{" "}
+              <span className="font-semibold text-[#111827]">
+                {new Date().toLocaleDateString("en-GB", {
+                  day: "numeric",
+                  month: "short",
+                  year: "numeric",
+                })}
               </span>
             </span>
           </div>
@@ -1322,7 +1977,9 @@ export default function App() {
           {phase === "review" && (
             <>
               <button
-                onClick={() => showToast("Exporting resolution review summary...")}
+                onClick={() =>
+                  showToast("Exporting resolution review summary...")
+                }
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E5E7EB] text-xs font-semibold text-[#374151] hover:bg-[#F9FAFB] transition-colors"
               >
                 <Download size={12} />
@@ -1357,7 +2014,9 @@ export default function App() {
             {notifOpen && (
               <div className="absolute right-0 top-11 w-80 bg-white rounded-2xl border border-[#E5E7EB] shadow-xl z-50 overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-[#E5E7EB]">
-                  <p className="text-sm font-semibold text-[#111827]">Notifications</p>
+                  <p className="text-sm font-semibold text-[#111827]">
+                    Notifications
+                  </p>
                   <span className="text-xs text-[#9CA3AF]">
                     {phase === "review" ? "1 unread" : "0 unread"}
                   </span>
@@ -1374,7 +2033,8 @@ export default function App() {
                             Conflict Analysis Complete
                           </p>
                           <p className="text-xs text-[#6B7280] leading-relaxed">
-                            {findings.length} finding(s) detected via FastAPI reasoning engine.
+                            {findings.length} finding(s) detected via FastAPI
+                            reasoning engine.
                           </p>
                           <p className="text-xs text-[#9CA3AF] mt-1.5 flex items-center gap-1">
                             <Clock size={10} /> Just now
@@ -1398,7 +2058,7 @@ export default function App() {
               AS
             </div>
             <span className="hidden sm:block text-sm font-medium text-[#374151]">
-              Aditi Sharma
+              Ankita Sagar
             </span>
             <ChevronDown size={13} className="text-[#9CA3AF]" />
           </button>
@@ -1408,31 +2068,11 @@ export default function App() {
       {/* ── Upload Phase ── */}
       {phase === "upload" && (
         <div className="flex-1 overflow-y-auto">
-          <UploadCard onUpload={handleStartUpload} />
-          <div className="flex flex-col items-center justify-center min-h-[calc(100%-140px)] text-center px-6 py-10">
-            <div className="w-14 h-14 rounded-2xl bg-white border border-[#E5E7EB] shadow-sm flex items-center justify-center mb-5">
-              <BookOpen size={26} className="text-[#D1D5DB]" />
-            </div>
-            <h2 className="text-sm font-semibold text-[#374151] mb-1.5">
-              Automated Legal Conflict Detection
-            </h2>
-            <p className="text-sm text-[#9CA3AF] max-w-sm leading-relaxed mb-10">
-              Upload a Government Resolution document or paste text to cross-reference against 1,840+ statutory provisions and citation graphs.
-            </p>
-            <div className="grid grid-cols-3 gap-4 max-w-xl w-full">
-              {[
-                { icon: Shield, label: "Conflict Detection", desc: "Identifies jurisdiction, financial, and legal conflicts against statutory provisions" },
-                { icon: BarChart3, label: "Severity Analysis", desc: "Findings ranked High / Medium / Low with LLM confidence metrics" },
-                { icon: CheckCircle2, label: "Actionable Guidance", desc: "Cross-references affected GRs and provides structured legal reasoning" },
-              ].map(({ icon: Icon, label, desc }) => (
-                <div key={label} className="bg-white rounded-2xl border border-[#E5E7EB] p-5 text-left hover:shadow-md hover:-translate-y-0.5 transition-all duration-200">
-                  <div className="w-8 h-8 rounded-xl bg-[#EFF6FF] flex items-center justify-center mb-4">
-                    <Icon size={16} className="text-[#2563EB]" />
-                  </div>
-                  <p className="text-xs font-semibold text-[#111827] mb-1.5">{label}</p>
-                  <p className="text-xs text-[#9CA3AF] leading-relaxed">{desc}</p>
-                </div>
-              ))}
+          <div className="max-w-6xl mx-auto px-6 pt-8 pb-12 flex flex-col gap-10">
+            <UploadCard onUpload={handleStartUpload} />
+            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,300px)_1fr] gap-8 lg:gap-10 items-start pt-8 border-t border-[#E5E7EB]">
+              <GrStructureRulesSection compact />
+              <AnalysisFeaturesSection />
             </div>
           </div>
         </div>
@@ -1451,6 +2091,15 @@ export default function App() {
       {/* ── Review Phase ── */}
       {phase === "review" && (
         <>
+          {conflictResult?.degraded && conflictResult.degradation_reasons && (
+            <div className="bg-amber-50 border-b border-amber-200 text-amber-900 text-xs px-6 py-2 flex items-start gap-2 flex-shrink-0">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <div>
+                <span className="font-semibold">Analysis ran in degraded mode — </span>
+                {conflictResult.degradation_reasons.join(" · ")}
+              </div>
+            </div>
+          )}
           {/* File breadcrumb */}
           <div className="bg-white border-b border-[#E5E7EB] px-6 py-2.5 flex items-center gap-3 flex-shrink-0">
             <div className="flex items-center gap-2 text-xs text-[#6B7280]">
@@ -1524,7 +2173,10 @@ export default function App() {
                 <div className="w-px h-4 bg-white/15 mx-1" />
 
                 <div className="relative max-w-[180px]">
-                  <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#6B7280]" />
+                  <Search
+                    size={11}
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#6B7280]"
+                  />
                   <input
                     placeholder="Find in document…"
                     className="w-full pl-7 pr-3 py-1 text-xs bg-white/8 rounded-lg text-[#E5E7EB] placeholder-[#6B7280] border border-white/10 focus:outline-none focus:ring-1 focus:ring-white/25"
@@ -1551,12 +2203,21 @@ export default function App() {
                   selectedFinding
                     ? {
                         id: selectedFinding.id,
-                        matchedText: selectedFinding.summary,
+                        matchedText:
+                          selectedFinding.matched_text ||
+                          selectedFinding.matchedText ||
+                          selectedFinding.summary,
+                        matched_text:
+                          selectedFinding.matched_text ||
+                          selectedFinding.matchedText ||
+                          selectedFinding.summary,
                         severity: selectedFinding.severity,
+                        location: `Pg ${selectedFinding.page}`,
                       }
                     : null
                 }
                 zoom={zoom}
+                scrollTarget={selectedFinding?.id}
                 scrollKey={scrollKey}
               />
             </div>
@@ -1567,10 +2228,59 @@ export default function App() {
               style={{ width: "35%" }}
             >
               {/* Summary stats */}
-              <SummaryBar findings={findings} />
+              <SummaryBar findings={reviewPanel === "template" ? templateFindings : conflictFindings} />
+              <TemplateAccuracyBar templateCheck={templateCheck} />
 
               {/* Panel header */}
               <div className="px-4 pt-4 pb-3 border-b border-[#E5E7EB] bg-white flex-shrink-0">
+                <div className="flex gap-1.5 mb-3 p-1 bg-[#F3F4F6] rounded-xl">
+                  <button
+                    onClick={() => setReviewPanel("conflicts")}
+                    className={`flex-1 flex items-center justify-center gap-1 py-2 rounded-lg text-xs font-semibold transition-all ${
+                      reviewPanel === "conflicts"
+                        ? "bg-white text-[#111827] shadow-sm"
+                        : "text-[#6B7280] hover:text-[#374151]"
+                    }`}
+                  >
+                    <Shield size={12} />
+                    Conflicts
+                  </button>
+                  <button
+                    onClick={() => setReviewPanel("template")}
+                    className={`flex-1 flex items-center justify-center gap-1 py-2 rounded-lg text-xs font-semibold transition-all ${
+                      reviewPanel === "template"
+                        ? "bg-white text-[#111827] shadow-sm"
+                        : "text-[#6B7280] hover:text-[#374151]"
+                    }`}
+                  >
+                    <LayoutTemplate size={12} />
+                    Template
+                    {templateCheck && templateCheck.violations.length > 0 && (
+                      <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded-md">
+                        {templateCheck.violations.length}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => setReviewPanel("terminology")}
+                    className={`flex-1 flex items-center justify-center gap-1 py-2 rounded-lg text-xs font-semibold transition-all ${
+                      reviewPanel === "terminology"
+                        ? "bg-white text-[#111827] shadow-sm"
+                        : "text-[#6B7280] hover:text-[#374151]"
+                    }`}
+                  >
+                    <Languages size={12} />
+                    Terms
+                    {glossaryCheck?.status === "ok" && glossaryCheck.findings.length > 0 && (
+                      <span className="bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded-md">
+                        {glossaryCheck.findings.length}
+                      </span>
+                    )}
+                  </button>
+                </div>
+
+                {reviewPanel === "conflicts" && (
+                  <>
                 <div className="flex items-center justify-between mb-3">
                   <h2 className="text-sm font-semibold text-[#111827]">
                     Conflict Findings
@@ -1591,22 +2301,86 @@ export default function App() {
                           ? s === "all"
                             ? "bg-[#111827] text-white"
                             : s === "high"
-                            ? "bg-red-600 text-white"
-                            : s === "medium"
-                            ? "bg-amber-500 text-white"
-                            : "bg-blue-600 text-white"
+                              ? "bg-red-600 text-white"
+                              : s === "medium"
+                                ? "bg-amber-500 text-white"
+                                : "bg-blue-600 text-white"
                           : "text-[#6B7280] hover:bg-[#F3F4F6]"
                       }`}
                     >
-                      {s === "all" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
+                      {s === "all"
+                        ? "All"
+                        : s.charAt(0).toUpperCase() + s.slice(1)}
                     </button>
                   ))}
                 </div>
+                  </>
+                )}
+
+                {reviewPanel === "template" && (
+                  <div className="flex items-center justify-between mb-1">
+                    <h2 className="text-sm font-semibold text-[#111827]">
+                      Structure Violations
+                    </h2>
+                    <span className="text-xs text-[#9CA3AF] bg-[#F3F4F6] px-2 py-0.5 rounded-md font-medium">
+                      {templateFindings.length} shown
+                    </span>
+                  </div>
+                )}
+
+                {reviewPanel === "terminology" && (
+                  <div className="flex items-center justify-between mb-1">
+                    <h2 className="text-sm font-semibold text-[#111827]">
+                      Terminology Check
+                    </h2>
+                    {glossaryCheck?.status === "ok" && (
+                      <span className="text-xs text-[#9CA3AF] bg-[#F3F4F6] px-2 py-0.5 rounded-md font-medium">
+                        {glossaryCheck.findings.length} flagged
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Findings list */}
               <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                {conflictResult && !conflictResult.conflicting ? (
+                {reviewPanel === "terminology" ? (
+                  <TerminologyPanel glossaryCheck={glossaryCheck} />
+                ) : reviewPanel === "template" ? (
+                  templateFindings.length === 0 ? (
+                    <div className="text-center py-12 px-4 bg-white rounded-2xl border border-green-200">
+                      <div className="w-12 h-12 rounded-2xl bg-green-50 text-green-600 flex items-center justify-center mx-auto mb-3 border border-green-100">
+                        <CheckCircle2 size={24} />
+                      </div>
+                      <h3 className="text-sm font-semibold text-[#111827] mb-1">
+                        Template Structure OK
+                      </h3>
+                      <p className="text-xs text-[#6B7280] leading-relaxed">
+                        All required GR sections are present and in the expected order.
+                      </p>
+                    </div>
+                  ) : (
+                    templateFindings.map((finding) => (
+                      <FindingCard
+                        key={finding.id}
+                        finding={finding}
+                        active={selectedFinding?.id === finding.id}
+                        bookmarked={bookmarks.has(finding.id)}
+                        onClick={() => handleFindingClick(finding)}
+                        onBookmark={(e) => {
+                          e.stopPropagation();
+                          toggleBookmark(finding.id);
+                        }}
+                      />
+                    ))
+                  )
+                ) : !conflictResult ? (
+                  <div className="bg-white rounded-2xl border border-red-200 p-6 text-center">
+                    <p className="text-sm text-red-700 leading-relaxed">
+                      Conflict detection could not be completed. Terminology results may still be available in the Terminology tab.
+                    </p>
+                  </div>
+                ) : conflictResult && !conflictResult.conflicting ? (
                   <div className="text-center py-12 px-4 bg-white rounded-2xl border border-green-200">
                     <div className="w-12 h-12 rounded-2xl bg-green-50 text-green-600 flex items-center justify-center mx-auto mb-3 border border-green-100">
                       <CheckCircle2 size={24} />
@@ -1635,11 +2409,14 @@ export default function App() {
                   ))
                 )}
 
-                {conflictResult?.conflicting && filteredFindings.length === 0 && (
-                  <div className="text-center py-10">
-                    <p className="text-sm text-[#9CA3AF]">No findings at this severity level.</p>
-                  </div>
-                )}
+                {conflictResult?.conflicting &&
+                  filteredFindings.length === 0 && (
+                    <div className="text-center py-10">
+                      <p className="text-sm text-[#9CA3AF]">
+                        No findings at this severity level.
+                      </p>
+                    </div>
+                  )}
               </div>
             </div>
           </div>
@@ -1658,11 +2435,19 @@ export default function App() {
 
       {/* Notif backdrop */}
       {notifOpen && (
-        <div className="fixed inset-0 z-40" onClick={() => setNotifOpen(false)} />
+        <div
+          className="fixed inset-0 z-40"
+          onClick={() => setNotifOpen(false)}
+        />
       )}
 
       {/* Toast */}
       {toast && <Toast message={toast} onDone={() => setToast(null)} />}
+
+      <DraftChatWidget
+        draftText={draftText}
+        documentKey={`${fileName}::${draftText.length}::${draftText.slice(0, 128)}`}
+      />
     </div>
   );
 }

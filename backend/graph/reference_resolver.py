@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -51,6 +52,64 @@ _STRUCTURAL_GR = re.compile(
     re.UNICODE,
 )
 
+# English "No." / "Number" prefix (common in bilingual citations)
+_ENGLISH_NO = re.compile(
+    r"(?:No\.?|Number|Ref\.?)\s*[:\-]?\s*"
+    r"([A-Za-z0-9\u0900-\u097F][\w\u0900-\u097F\s\./\-]{4,100})"
+    + _STOP_LOOKAHEAD,
+    re.IGNORECASE | re.UNICODE,
+)
+
+# शासन निर्णय क्र. variant
+_GOV_ORDER_NO = re.compile(
+    r"शासन\s+निर्णय\s+क्र[\s\.:ः\-–—]*\s*"
+    r"(.+?)"
+    + _STOP_LOOKAHEAD,
+    re.UNICODE,
+)
+
+# Letter reference: पत्र क्रमांक
+_LETTER_NO = re.compile(
+    r"पत्र\s+क्र[\s\.:ः\-–—]*\s*"
+    r"(.+?)"
+    + _STOP_LOOKAHEAD,
+    re.UNICODE,
+)
+
+# प्र.क्र. / प्रक्र inline file reference
+_PROKRI_LABEL = re.compile(
+    r"प्र\.?\s*क्र\.?\s*[:\-]?\s*"
+    r"(.+?)"
+    + _STOP_LOOKAHEAD,
+    re.UNICODE,
+)
+
+# शासन शुध्दीपत्रक / परिपत्रक क्र.
+_DOC_TYPE_NO = re.compile(
+    r"शासन\s+(?:निर्णय|शुध्दीपत्रक|परिपत्रक|पत्र)\s+क्र[\s\.:ः\-–—]*\s*"
+    r"(.+?)"
+    + _STOP_LOOKAHEAD,
+    re.UNICODE,
+)
+
+# Loose structural: dept-YEAR/middle/section without strict parens
+_STRUCTURAL_GR_LOOSE = re.compile(
+    r"("
+    r"[\w\u0900-\u097F][\w\u0900-\u097F\s\.\-]{0,35}"
+    r"-\s*[०१२३४५६७८९0-9]{4}\s*"
+    r"/\s*[^,;]+?"
+    r"/\s*[\w\u0900-\u097F\-]+"
+    r")",
+    re.UNICODE,
+)
+
+DEFAULT_MIN_RESOLUTION_RATE = float(os.getenv("CITATION_MIN_RESOLUTION_RATE", "0.25"))
+CI_MIN_RESOLUTION_RATE = float(os.getenv("CITATION_CI_MIN_RESOLUTION_RATE", "0.50"))
+
+
+class CitationResolutionError(RuntimeError):
+    """Raised when citation resolution rate falls below a required threshold."""
+
 
 def extract_gr_number_from_citation(raw_text: str) -> Optional[str]:
     """
@@ -71,12 +130,20 @@ def extract_gr_number_from_citation(raw_text: str) -> Optional[str]:
         if _looks_like_gr(candidate):
             return candidate
 
-    # Fallback: structural pattern anywhere in the string
-    match = _STRUCTURAL_GR.search(text)
-    if match:
-        candidate = _trim_citation_noise(match.group(1))
-        if _looks_like_gr(candidate):
-            return candidate
+    for pattern in (_GOV_ORDER_NO, _LETTER_NO, _DOC_TYPE_NO, _PROKRI_LABEL, _ENGLISH_NO):
+        match = pattern.search(text)
+        if match:
+            candidate = _trim_citation_noise(match.group(1))
+            if _looks_like_gr(candidate):
+                return candidate
+
+    # Fallback: structural patterns
+    for pattern in (_STRUCTURAL_GR, _STRUCTURAL_GR_LOOSE):
+        match = pattern.search(text)
+        if match:
+            candidate = _trim_citation_noise(match.group(1))
+            if _looks_like_gr(candidate):
+                return candidate
 
     return None
 
@@ -110,8 +177,20 @@ class ReferenceResolver:
         self.db = db or Database()
         self._owns_db = db is None
 
-        # canonical -> document id (lowest id wins)
-        self.canonical_index: Dict[str, int] = self.db.build_canonical_index()
+        # canonical -> document id (lowest id wins; duplicates tracked)
+        index, self.duplicate_canonicals = self.db.build_canonical_index()
+        self.canonical_index = index
+
+        if self.duplicate_canonicals:
+            logger.warning(
+                "Found %d duplicate gr_number_canonical values (lowest id kept): %s",
+                len(self.duplicate_canonicals),
+                self.duplicate_canonicals[:5],
+            )
+            print(
+                f"Warning: {len(self.duplicate_canonicals)} duplicate canonical GR numbers "
+                f"in database (lowest id kept for each)."
+            )
 
         self.stats = {
             "documents_processed": 0,
@@ -233,7 +312,62 @@ class ReferenceResolver:
                     pairs.append(pair)
 
         self._log_stats(len(pairs))
+        self.check_resolution_quality()
         return pairs
+
+    def resolution_rate(self) -> float:
+        found = self.stats["references_found"]
+        resolved = self.stats["references_resolved"]
+        return (100.0 * resolved / found) if found else 0.0
+
+    def check_resolution_quality(
+        self, min_rate: float = DEFAULT_MIN_RESOLUTION_RATE
+    ) -> float:
+        """
+        Log a warning if citation resolution rate falls below the threshold.
+        Returns the resolution rate (0–100).
+        """
+        rate = self.resolution_rate()
+        if self.stats["references_found"] == 0:
+            logger.warning("No citations found in corpus for graph edge resolution.")
+            print("Warning: No citations found in corpus — graph will have no CITES edges.")
+            return rate
+
+        if rate < min_rate * 100:
+            msg = (
+                f"Citation resolution rate {rate:.1f}% is below threshold "
+                f"({min_rate * 100:.0f}%). Graph expansion quality may be poor."
+            )
+            logger.warning(msg)
+            print(f"Warning: {msg}")
+
+        return rate
+
+    def enforce_resolution_quality(
+        self,
+        min_rate: float = CI_MIN_RESOLUTION_RATE,
+        *,
+        require_citations: bool = True,
+    ) -> float:
+        """
+        Assert citation resolution meets *min_rate* (0–1 fraction).
+        Raises CitationResolutionError when below threshold — for CI / strict ingest.
+        """
+        rate = self.resolution_rate()
+        found = self.stats["references_found"]
+
+        if require_citations and found == 0:
+            raise CitationResolutionError(
+                "No citations found in corpus for graph edge resolution."
+            )
+
+        if found > 0 and rate < min_rate * 100:
+            raise CitationResolutionError(
+                f"Citation resolution rate {rate:.1f}% is below required "
+                f"threshold ({min_rate * 100:.0f}%)."
+            )
+
+        return rate
 
     # ------------------------------------------------------------------
     # Logging

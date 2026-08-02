@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from api.config import settings
-from api.routes import documents, graph, reasoning, search
+from api.routes import chat, documents, graph, reasoning, search
 from database.db import Database
 
 logging.basicConfig(
@@ -51,12 +51,13 @@ app.include_router(search.router)
 app.include_router(documents.router)
 app.include_router(graph.router)
 app.include_router(reasoning.router)
+app.include_router(chat.router)
 
 
 @app.get("/health", tags=["health"])
 def health_check() -> Dict[str, Any]:
     """
-    Lightweight health check endpoint with database connectivity check.
+    Health check with Postgres and Neo4j connectivity.
     """
     db_ok = False
     try:
@@ -68,9 +69,61 @@ def health_check() -> Dict[str, Any]:
         logger.warning(f"Database health check failed: {e}")
         db_ok = False
 
+    neo4j_status: Dict[str, Any] = {"ok": False, "error": "not checked"}
+    try:
+        from graph.neo4j_query import check_neo4j_health
+
+        neo4j_status = check_neo4j_health()
+    except Exception as e:
+        neo4j_status = {"ok": False, "error": str(e)}
+
+    embeddings_health: Dict[str, Any] = {
+        "ok": False,
+        "count": 0,
+        "total_documents": 0,
+        "coverage": 0.0,
+    }
+    try:
+        db = Database()
+        db.cur.execute("SELECT COUNT(*) FROM gr_documents")
+        total_docs = int(db.cur.fetchone()[0])
+        db.cur.execute(
+            "SELECT COUNT(*) FROM gr_documents WHERE embedding IS NOT NULL"
+        )
+        embedded = int(db.cur.fetchone()[0])
+        db.close()
+        coverage = (embedded / total_docs) if total_docs else 0.0
+        embeddings_health = {
+            "ok": embedded > 0 and coverage >= 0.5,
+            "count": embedded,
+            "total_documents": total_docs,
+            "coverage": round(coverage, 4),
+        }
+    except Exception as e:
+        embeddings_health["error"] = str(e)
+
+    store_sync: Dict[str, Any] = {"in_sync": True, "warnings": []}
+    try:
+        from database.sync_status import check_store_sync
+
+        store_sync = check_store_sync()
+    except Exception as e:
+        store_sync = {"in_sync": False, "warnings": [str(e)]}
+
+    overall_ok = (
+        db_ok
+        and neo4j_status.get("ok", False)
+        and embeddings_health.get("ok", False)
+        and store_sync.get("in_sync", False)
+    )
+
     return {
-        "status": "ok",
+        "status": "ok" if overall_ok else "degraded",
         "db": db_ok,
+        "neo4j": neo4j_status.get("ok", False),
+        "neo4j_error": neo4j_status.get("error"),
+        "embeddings": embeddings_health,
+        "store_sync": store_sync,
     }
 
 

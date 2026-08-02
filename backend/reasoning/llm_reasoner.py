@@ -9,7 +9,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Type, TypeVar
+from typing import Optional, Type, TypeVar
 
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -21,18 +21,56 @@ if str(ROOT) not in sys.path:
 load_dotenv(ROOT / ".env")
 
 from database.db import Database
+from embeddings.search import build_draft_query_segments
 from reasoning.context_builder import build_context_block
+from reasoning.clause_parser import extract_draft_clauses, format_clauses_for_prompt
 from reasoning.models import (
     ComparisonResult,
     ConflictFinding,
+    ConflictLLMOutput,
     QueryAnswer,
-    SupportingGR,
+    RetrievalQualityInfo,
+    RuleSignal,
+)
+from reasoning.retrieval_gate import (
+    assess_retrieval_quality,
+    build_degradation_reasons,
+    rerank_with_draft_overlap,
+)
+from reasoning.rule_signals import extract_rule_signals, format_rule_signals_for_prompt
+from database.sync_status import check_store_sync
+from reasoning.prompt_utils import (
+    COMPARE_OUTPUT_SCHEMA,
+    CONFLICT_CONTEXT_CHARS,
+    CONFLICT_DRAFT_CHARS,
+    CONFLICT_EXCERPT_CHARS,
+    CONFLICT_OUTPUT_SCHEMA,
+    GROQ_MAX_INPUT_TOKENS,
+    MAX_PROMPT_CHARS,
+    QUERY_OUTPUT_SCHEMA,
+    REASONING_TEMPERATURE,
+    apply_conflict_post_validation,
+    apply_query_post_validation,
+    build_compare_ocr_sections,
+    chars_for_token_budget,
+    estimate_tokens,
+    fit_prompt_pair,
+    summarize_draft_for_prompt,
+    temporal_context_note,
 )
 from retrieval.hybrid import hybrid_search
 from scripts.api_manager import APIManager
 
 REASONING_MODEL = os.getenv("REASONING_MODEL", "llama-3.3-70b-versatile")
 DEFAULT_MAX_FULL_TEXT = int(os.getenv("REASONING_MAX_FULL_TEXT_DOCS", "8"))
+CONFLICT_MAX_FULL_TEXT = int(os.getenv("CONFLICT_MAX_FULL_TEXT_DOCS", "5"))
+CONFLICT_TOP_K = int(os.getenv("CONFLICT_TOP_K", "10"))
+MAX_LLM_RETRIES = int(os.getenv("REASONING_MAX_RETRIES", "2"))
+ALLOW_SMALL_FALLBACK = os.getenv("REASONING_ALLOW_SMALL_FALLBACK", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 _api_manager: Optional[APIManager] = None
 
@@ -47,6 +85,35 @@ def get_api_manager() -> APIManager:
 
 T = TypeVar("T", bound=BaseModel)
 
+# Only treat inputs with path separators as filesystem paths.
+_DRAFT_PATH_EXTENSIONS = (".txt", ".md", ".json", ".text")
+
+
+def resolve_draft_text(draft_input: str) -> str:
+    """
+    Return draft body text. Short inputs are read from disk only when they
+    look like explicit file paths (separator or known extension), avoiding
+  accidental reads when a query string matches an existing path.
+    """
+    if len(draft_input) >= 512:
+        return draft_input
+
+    stripped = draft_input.strip()
+    # Require path separators — bare filenames like "probe.txt" are draft text
+    looks_like_path = "/" in stripped or "\\" in stripped
+    if not looks_like_path:
+        return draft_input
+
+    try:
+        draft_path = Path(stripped)
+        if draft_path.exists() and draft_path.is_file():
+            print(f"Reading draft text from file: {draft_path}")
+            return draft_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        pass
+
+    return draft_input
+
 
 def _clean_json_text(text: str) -> str:
     cleaned = text.strip()
@@ -59,84 +126,126 @@ def _clean_json_text(text: str) -> str:
     return cleaned.strip()
 
 
-FALLBACK_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-]
+def _fallback_models() -> list[str]:
+    models = [REASONING_MODEL, "llama-3.3-70b-versatile"]
+    if ALLOW_SMALL_FALLBACK:
+        models.append("llama-3.1-8b-instant")
+    # Deduplicate preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in models:
+        if m not in seen:
+            seen.add(m)
+            out.append(m)
+    return out
+
+
+def _is_request_too_large(err_msg: str) -> bool:
+    return any(
+        kw in err_msg
+        for kw in (
+            "413",
+            "too large",
+            "request too large",
+            "tokens per minute",
+            "tpm",
+            "context length",
+            "maximum context",
+        )
+    )
 
 
 def _call_llm_json(
     system_prompt: str,
     user_prompt: str,
     model_cls: Type[T],
-    max_retries: int = 1,
+    max_retries: Optional[int] = None,
+    compact_schema: Optional[str] = None,
+    char_budget: Optional[int] = None,
 ) -> T:
-    """
-    Execute Groq LLM completion with APIManager rotation, model fallbacks, and Pydantic model validation.
-    """
+    """Groq JSON completion with prompt fitting and automatic shrink on token-limit errors."""
+    if max_retries is None:
+        max_retries = MAX_LLM_RETRIES
+
+    base_sys = system_prompt
+    base_usr = user_prompt
+    curr_budget = char_budget or MAX_PROMPT_CHARS
+    schema_hint = compact_schema or "valid JSON with all required fields"
     api_mgr = get_api_manager()
+    last_exception: Optional[Exception] = None
 
-    models_to_try = [REASONING_MODEL]
-    for fallback in FALLBACK_MODELS:
-        if fallback not in models_to_try:
-            models_to_try.append(fallback)
+    for model_name in _fallback_models():
+        rate_limited_model = False
 
-    last_exception = None
-
-    for model_name in models_to_try:
-        attempt = 0
-        curr_sys = system_prompt
-        curr_usr = user_prompt
-
-        while attempt <= max_retries:
-            idx, client = api_mgr.wait_for_client(max_wait=30)
-            if client is None:
-                break
-
-            try:
-                completion = client.chat.completions.create(
-                    model=model_name,
-                    messages=[
-                        {"role": "system", "content": curr_sys},
-                        {"role": "user", "content": curr_usr},
-                    ],
-                    temperature=0.1,
-                    response_format={"type": "json_object"},
+        for validation_attempt in range(max_retries + 1):
+            sys_prompt = base_sys
+            if validation_attempt > 0:
+                sys_prompt = (
+                    base_sys.split("JSON Schema:")[0].rstrip()
+                    + f"\n\nRETRY: Return ONLY JSON matching: {schema_hint}"
                 )
 
-                raw_text = completion.choices[0].message.content or ""
-                cleaned = _clean_json_text(raw_text)
-                parsed_dict = json.loads(cleaned)
-                return model_cls.model_validate(parsed_dict)
+            budget = curr_budget
+            for shrink_pass in range(6):
+                fitted_sys, fitted_usr, _ = fit_prompt_pair(
+                    sys_prompt, base_usr, max_total_chars=budget
+                )
 
-            except Exception as e:
-                last_exception = e
-                err_msg = str(e).lower()
-
-                # If rate-limited, decommissioned, or invalid model, skip to next model immediately
-                if any(kw in err_msg for kw in ["rate limit", "429", "quota", "decommissioned", "not supported"]):
-                    print(f"Notice: Model {model_name} unavailable ({e}). Falling back to next model...")
-                    if idx is not None and ("rate limit" in err_msg or "429" in err_msg):
-                        api_mgr.mark_rate_limited(idx, retry_after=15, all_keys=True)
+                idx, client = api_mgr.wait_for_client(max_wait=30)
+                if client is None:
+                    rate_limited_model = True
                     break
 
-                attempt += 1
-                if attempt <= max_retries:
-                    print(f"Warning: Response validation against {model_cls.__name__} failed ({e}). Retrying...")
-                    curr_sys = (
-                        system_prompt
-                        + "\n\nCRITICAL ERROR: Output was not valid JSON. Return ONLY valid JSON matching schema."
+                try:
+                    completion = client.chat.completions.create(
+                        model=model_name,
+                        messages=[
+                            {"role": "system", "content": fitted_sys},
+                            {"role": "user", "content": fitted_usr},
+                        ],
+                        temperature=REASONING_TEMPERATURE,
+                        response_format={"type": "json_object"},
+                        max_tokens=1024,
                     )
-                    curr_usr = (
-                        user_prompt
-                        + "\n\nEnsure output is strictly valid JSON matching schema."
-                    )
+                    raw_text = completion.choices[0].message.content or ""
+                    parsed_dict = json.loads(_clean_json_text(raw_text))
+                    return model_cls.model_validate(parsed_dict)
+
+                except Exception as e:
+                    last_exception = e
+                    err_msg = str(e).lower()
+
+                    if _is_request_too_large(err_msg) and shrink_pass < 5:
+                        budget = max(2500, int(budget * 0.65))
+                        curr_budget = budget
+                        print(
+                            f"Warning: Groq token limit ({e}). "
+                            f"Shrinking to {budget} chars (pass {shrink_pass + 1})..."
+                        )
+                        continue
+
+                    if any(
+                        kw in err_msg
+                        for kw in ["rate limit", "429", "quota", "decommissioned", "not supported"]
+                    ) and not _is_request_too_large(err_msg):
+                        if idx is not None and ("rate limit" in err_msg or "429" in err_msg):
+                            api_mgr.mark_rate_limited(idx, retry_after=15, all_keys=True)
+                        rate_limited_model = True
+                        break
+
+                    if validation_attempt < max_retries:
+                        print(
+                            f"Warning: {model_cls.__name__} parse failed ({e}). "
+                            f"Retry {validation_attempt + 1}/{max_retries}..."
+                        )
+                    break  # leave shrink loop → next validation attempt or model
+
+            if rate_limited_model:
+                break
 
     raise RuntimeError(
         f"Failed to generate valid {model_cls.__name__} output from Groq API: {last_exception}"
     ) from last_exception
-
-
 
 
 def answer_query(
@@ -149,36 +258,38 @@ def answer_query(
     Perform natural language Q&A over the GR corpus using RAG.
     """
     print(f"\n--- [answer_query] Processing query: '{query}' ---")
-    results = hybrid_search(query, top_k=top_k, hops=hops, db=db)
+    results, retrieval_meta = hybrid_search(
+        query, top_k=top_k, hops=hops, db=db, return_meta=True
+    )
     print(f"Retrieved {len(results)} candidate GRs from hybrid search.")
+    if retrieval_meta.graph_degraded:
+        print(f"Warning: graph retrieval degraded — {retrieval_meta.graph_error}")
 
     context_text, label_map = build_context_block(
         results, max_full_text=DEFAULT_MAX_FULL_TEXT, db=db
     )
 
-    prompt_chars = len(context_text) + len(query)
-    approx_tokens = prompt_chars // 4
-    print(f"Context built: {len(results)} GR entries | {prompt_chars} chars (~{approx_tokens} tokens)")
+    temporal_note = temporal_context_note(results)
+    prompt_chars = len(context_text) + len(query) + len(temporal_note)
+    print(f"Context built: {len(results)} GR entries | {prompt_chars} chars (~{prompt_chars // 4} tokens)")
 
-    schema_json = json.dumps(QueryAnswer.model_json_schema(), indent=2)
+    schema_json = QUERY_OUTPUT_SCHEMA
 
     system_prompt = f"""
-You are an expert AI Legal Assistant specializing in Maharashtra Government Resolutions (GRs).
-Your task is to answer user queries based STRICTLY on the provided GR Context block.
-
-CRITICAL INSTRUCTIONS:
-1. Base your answer ONLY on the provided GR context. Do NOT use outside knowledge or hallucinate facts.
-2. For EVERY claim, policy detail, or date, cite the specific GR label (e.g. [GR 1], [GR 2]).
-3. Populate supporting_grs with all cited GR labels and their canonical GR numbers.
-4. Output MUST be valid JSON strictly adhering to the JSON schema below. No markdown fences, no explanatory prose outside JSON.
+You are an expert AI Legal Assistant for Maharashtra Government Resolutions (GRs).
+Answer STRICTLY from the provided GR context. Cite GR labels like [GR 1].
+Output valid JSON only (no markdown).
 
 JSON Schema:
 {schema_json}
 """.strip()
 
-    user_prompt = f"User Query: {query}\n\nGR Context:{context_text}"
+    user_prompt = f"User Query: {query}\n{temporal_note}\nGR Context:{context_text}"
 
-    return _call_llm_json(system_prompt, user_prompt, QueryAnswer)
+    answer = _call_llm_json(
+        system_prompt, user_prompt, QueryAnswer, compact_schema=QUERY_OUTPUT_SCHEMA
+    )
+    return apply_query_post_validation(answer, label_map)
 
 
 def compare_grs(
@@ -216,46 +327,16 @@ def compare_grs(
         print(f"GR A [ID {gr_id_a}]: {doc_a.get('gr_number_canonical')} ({doc_a.get('department')})")
         print(f"GR B [ID {gr_id_b}]: {doc_b.get('gr_number_canonical')} ({doc_b.get('department')})")
 
-        ocr_a = (doc_a.get("ocr_text") or "").strip()[:2500]
-        ocr_b = (doc_b.get("ocr_text") or "").strip()[:2500]
-
-        context_text = f"""
-[GR A]
-ID: {gr_id_a}
-Canonical GR Number: {doc_a.get('gr_number_canonical')}
-Department: {doc_a.get('department')}
-Date: {doc_a.get('gr_date')}
-Subject: {doc_a.get('subject_mr')}
-OCR Excerpt:
-{ocr_a if ocr_a else 'No text available'}
-
-============================================================
-
-[GR B]
-ID: {gr_id_b}
-Canonical GR Number: {doc_b.get('gr_number_canonical')}
-Department: {doc_b.get('department')}
-Date: {doc_b.get('gr_date')}
-Subject: {doc_b.get('subject_mr')}
-OCR Excerpt:
-{ocr_b if ocr_b else 'No text available'}
-""".strip()
+        context_text = build_compare_ocr_sections(doc_a, doc_b, gr_id_a, gr_id_b)
 
         prompt_chars = len(context_text)
-        approx_tokens = prompt_chars // 4
-        print(f"Comparison prompt built: {prompt_chars} chars (~{approx_tokens} tokens)")
+        print(f"Comparison prompt built: {prompt_chars} chars (~{prompt_chars // 4} tokens)")
 
-        schema_json = json.dumps(ComparisonResult.model_json_schema(), indent=2)
+        schema_json = COMPARE_OUTPUT_SCHEMA
 
         system_prompt = f"""
-You are an expert Maharashtra Government Resolution (GR) Analyst.
-Compare [GR A] and [GR B] clause-by-clause and identify:
-1. Added: Provisions or rules present in GR B but missing in GR A.
-2. Removed: Provisions present in GR A but missing in GR B.
-3. Changed: Modified policy terms, eligibility, dates, or financial allocations.
-4. Contradictions: Direct legal or policy conflicts between the two GRs.
-
-Output MUST be valid JSON strictly adhering to the JSON schema below. No markdown text outside JSON.
+You are a Maharashtra GR analyst. Compare GR A and GR B; list added, removed, changed, contradictions.
+Output valid JSON only.
 
 JSON Schema:
 {schema_json}
@@ -263,7 +344,12 @@ JSON Schema:
 
         user_prompt = f"Compare [GR A] and [GR B]:\n\n{context_text}"
 
-        return _call_llm_json(system_prompt, user_prompt, ComparisonResult)
+        return _call_llm_json(
+            system_prompt,
+            user_prompt,
+            ComparisonResult,
+            compact_schema=COMPARE_OUTPUT_SCHEMA,
+        )
 
     finally:
         if owns_db:
@@ -272,7 +358,7 @@ JSON Schema:
 
 def check_conflict(
     draft_input: str,
-    top_k: int = 15,
+    top_k: int = CONFLICT_TOP_K,
     hops: int = 1,
     db: Optional[Database] = None,
 ) -> ConflictFinding:
@@ -281,52 +367,149 @@ def check_conflict(
     """
     print("\n--- [check_conflict] Analyzing draft GR for conflicts ---")
 
-    draft_text = draft_input
-    if len(draft_input) < 512:
-        try:
-            draft_path = Path(draft_input)
-            if draft_path.exists() and draft_path.is_file():
-                print(f"Reading draft text from file: {draft_path}")
-                draft_text = draft_path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            pass
+    draft_text = resolve_draft_text(draft_input)
 
     draft_text_clean = draft_text.strip()
     if not draft_text_clean:
         raise ValueError("Draft text is empty.")
 
-    # Use first 500 characters of draft as query for hybrid search
-    query_seed = draft_text_clean[:500]
-    results = hybrid_search(query_seed, top_k=top_k, hops=hops, db=db)
-    print(f"Retrieved {len(results)} candidate GRs for conflict analysis.")
-
-    context_text, label_map = build_context_block(
-        results, max_full_text=DEFAULT_MAX_FULL_TEXT, db=db
+    query_segments = build_draft_query_segments(draft_text_clean)
+    print(
+        f"Conflict retrieval using {len(query_segments)} draft segment(s) "
+        f"(min score threshold via SEMANTIC_MIN_SCORE)"
+    )
+    results, retrieval_meta = hybrid_search(
+        query_segments, top_k=top_k, hops=hops, db=db, return_meta=True
     )
 
-    prompt_chars = len(draft_text_clean) + len(context_text)
-    approx_tokens = prompt_chars // 4
-    print(f"Conflict check prompt built: {prompt_chars} chars (~{approx_tokens} tokens)")
+    # Lightweight rerank + pre-LLM retrieval gate
+    results = rerank_with_draft_overlap(results, draft_text_clean)
+    quality_dict = assess_retrieval_quality(results, retrieval_meta)
+    store_sync = check_store_sync(db=db)
+    degradation_reasons = build_degradation_reasons(quality_dict, store_sync)
+    retrieval_quality = RetrievalQualityInfo(**quality_dict)
 
-    schema_json = json.dumps(ConflictFinding.model_json_schema(), indent=2)
+    draft_clauses = extract_draft_clauses(draft_text_clean)
+    rule_signal_dicts = extract_rule_signals(draft_text_clean, results)
+    rule_signals = [
+        RuleSignal(
+            signal_type=s["signal_type"],
+            value=s["value"],
+            note=s.get("note", ""),
+            matched_gr_id=int(s["matched_gr_id"])
+            if s.get("matched_gr_id") and str(s["matched_gr_id"]).isdigit()
+            else None,
+        )
+        for s in rule_signal_dicts
+    ]
+
+    if retrieval_meta.graph_degraded:
+        print(
+            f"Warning: graph retrieval degraded — {retrieval_meta.graph_error}. "
+            "Citation-linked GRs may be missing from context."
+        )
+    elif retrieval_meta.graph_skipped:
+        print("Graph expansion skipped (hops=0).")
+    else:
+        print(
+            f"Hybrid retrieval: {retrieval_meta.vector_seeds} vector seeds, "
+            f"{retrieval_meta.graph_nodes_added} graph nodes added."
+        )
+    print(
+        f"Retrieved {len(results)} candidate GRs "
+        f"(gate passed={quality_dict['passed']}, max_score={quality_dict['max_score']:.3f})."
+    )
+
+    if not quality_dict["passed"]:
+        return ConflictFinding(
+            conflicting=False,
+            explanation=(
+                "Insufficient retrieval quality to assess conflicts confidently. "
+                "No GRs met the similarity threshold or the corpus may need re-embedding. "
+                + " ".join(quality_dict.get("warnings") or [])
+            ).strip(),
+            confidence=0.2,
+            degraded=True,
+            degradation_reasons=degradation_reasons,
+            retrieval_quality=retrieval_quality,
+            rule_signals=rule_signals,
+            draft_clauses_detected=draft_clauses,
+        )
+
+    context_text, label_map = build_context_block(
+        results[:CONFLICT_TOP_K],
+        max_full_text=CONFLICT_MAX_FULL_TEXT,
+        excerpt_chars=CONFLICT_EXCERPT_CHARS,
+        max_context_chars=CONFLICT_CONTEXT_CHARS,
+        db=db,
+        sort_by_date=True,
+    )
+
+    draft_for_prompt = summarize_draft_for_prompt(
+        draft_text_clean, max_chars=CONFLICT_DRAFT_CHARS
+    )
+    temporal_note = temporal_context_note(results)
+    clauses_note = format_clauses_for_prompt(draft_clauses[:6])
+    signals_note = format_rule_signals_for_prompt(rule_signal_dicts[:8])
+
+    prompt_chars = (
+        len(draft_for_prompt)
+        + len(context_text)
+        + len(temporal_note)
+        + len(clauses_note)
+        + len(signals_note)
+    )
+    est_tokens = estimate_tokens(
+        draft_for_prompt + context_text + temporal_note + clauses_note + signals_note
+    )
+    print(f"Conflict check prompt built: {prompt_chars} chars (~{est_tokens} tokens est.)")
+
+    schema_json = CONFLICT_OUTPUT_SCHEMA
 
     system_prompt = f"""
 You are an AI Legal Auditor for Maharashtra Government Resolutions (GRs).
-Your task is to analyze a PROPOSED DRAFT GR against existing Government Resolutions in the corpus.
-
-CRITICAL INSTRUCTIONS:
-1. Determine if the Proposed Draft conflicts with, duplicates, or contradicts existing GRs in the context.
-2. Flag CROSS-DEPARTMENTAL conflicts explicitly if the draft conflicts with a GR from a different department.
-3. List specific conflicting clauses and cite affected GRs by label (e.g. [GR 1], [GR 2]).
-4. Output MUST be valid JSON strictly conforming to the schema below. No markdown fences outside JSON.
+Analyze the PROPOSED DRAFT against existing GRs in context.
+Set cross_departmental / supersession_detected when applicable.
+Cite GRs ONLY by labels in context (e.g. [GR 1]). Use RULE SIGNALS as hints.
+For each affected_gr, set corpus_excerpt to the EXACT quote from that GR's OCR in context
+that conflicts with the draft (e.g. if draft says ₹25,000 and [GR 2] says ₹24,000, quote the ₹24,000 sentence).
+Output valid JSON only.
 
 JSON Schema:
 {schema_json}
 """.strip()
 
-    user_prompt = f"PROPOSED DRAFT GR:\n{draft_text_clean[:3000]}\n\nEXISTING GR CONTEXT:{context_text}"
+    user_prompt = (
+        f"PROPOSED DRAFT GR:\n{draft_for_prompt}\n"
+        f"{clauses_note}"
+        f"{signals_note}"
+        f"{temporal_note}\n"
+        f"EXISTING GR CONTEXT (newest-first):{context_text}"
+    )
 
-    return _call_llm_json(system_prompt, user_prompt, ConflictFinding)
+    conflict_budget = chars_for_token_budget(GROQ_MAX_INPUT_TOKENS - 800)
+    llm_out = _call_llm_json(
+        system_prompt,
+        user_prompt,
+        ConflictLLMOutput,
+        compact_schema=CONFLICT_OUTPUT_SCHEMA,
+        char_budget=conflict_budget,
+    )
+    finding = ConflictFinding(
+        **llm_out.model_dump(),
+        degraded=bool(degradation_reasons),
+        degradation_reasons=degradation_reasons,
+        retrieval_quality=retrieval_quality,
+        rule_signals=rule_signals,
+        draft_clauses_detected=draft_clauses,
+    )
+    finding = apply_conflict_post_validation(finding, label_map)
+
+    # Boost cross_departmental from deterministic department_mismatch signals
+    if any(s.signal_type == "department_mismatch" for s in rule_signals):
+        finding.cross_departmental = True
+
+    return finding
 
 
 def main() -> None:

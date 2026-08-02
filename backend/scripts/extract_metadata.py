@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from parser.metadata import GRMetadata
 from parser.normalize import normalize_gr_number
+from parser.paths import resolve_text_folder
 from parser.rule_extractor import rule_extract, get_missing_fields, CORE_FIELDS
 
 # Fast model for residual LLM fills
@@ -34,7 +35,7 @@ _MIN_REQUEST_GAP = float(os.getenv("MIN_REQUEST_GAP", "0.35"))
 _request_lock = threading.Lock()
 _last_request_at = 0.0
 
-TEXT_FOLDER = ROOT / "maha_grs 2" / "maha_grs" / "fulltext"
+TEXT_FOLDER = resolve_text_folder(ROOT)
 OUTPUT_FOLDER = ROOT / "metadata"
 OUTPUT_FOLDER.mkdir(exist_ok=True)
 

@@ -3,11 +3,18 @@ Ingest metadata/*.json + matching fulltext OCR into PostgreSQL.
 
 Usage:
     .venv/bin/python scripts/ingest.py
+
+Environment:
+    GR_FULLTEXT_DIR   — override OCR fulltext directory
+    GR_METADATA_DIR   — override metadata JSON directory
+    INGEST_SYNC_NEO4J — sync Neo4j graph after ingest (true/false)
+    STRICT_INGEST_VALIDATION — exit 1 if post-ingest checks fail
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -18,12 +25,16 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from parser.normalize import normalize_metadata
+from parser.paths import resolve_metadata_folder, resolve_text_folder
 from database.db import Database
+from scripts.ingest_validation import run_post_ingest_validation
 
-TEXT_FOLDER = ROOT / "maha_grs 2" / "maha_grs" / "fulltext"
-META_FOLDER = ROOT / "metadata"
+TEXT_FOLDER = resolve_text_folder(ROOT)
+META_FOLDER = resolve_metadata_folder(ROOT)
 ERROR_LOG = ROOT / "failed_ingest.txt"
 COMMIT_EVERY = 100
+SYNC_NEO4J = os.getenv("INGEST_SYNC_NEO4J", "false").lower() in ("1", "true", "yes")
+RUN_EMBED_AFTER = os.getenv("INGEST_RUN_EMBED", "false").lower() in ("1", "true", "yes")
 
 
 def load_json(path: Path) -> dict:
@@ -33,7 +44,6 @@ def load_json(path: Path) -> dict:
 def prepare_row(meta: dict, ocr_text: str) -> dict:
     """Normalize JSON metadata and attach OCR text for DB insert."""
 
-    # normalize_references expects list[dict]
     refs = meta.get("references") or []
     cleaned_refs = []
     for item in refs:
@@ -43,18 +53,20 @@ def prepare_row(meta: dict, ocr_text: str) -> dict:
             cleaned_refs.append(item)
     meta = {**meta, "references": cleaned_refs}
 
-    # Prefer already-normalised GR number from extractor JSON
     if meta.get("gr_normalised") and not meta.get("gr_number_normalized"):
         meta["gr_number_normalized"] = meta["gr_normalised"]
 
     row = normalize_metadata(meta)
 
-    # Keep original JSON department name (normalize does not set this)
     row["department"] = meta.get("department")
 
-    # If normalize wiped normalised number, fall back to JSON field
     if not row.get("gr_number_normalized") and meta.get("gr_normalised"):
         row["gr_number_normalized"] = meta["gr_normalised"]
+
+    # Recompute canonical if normalize left it empty but we have a normalized number
+    if not row.get("gr_number_canonical") and row.get("gr_number_normalized"):
+        from parser.normalize import canonical_gr_number
+        row["gr_number_canonical"] = canonical_gr_number(row["gr_number_normalized"])
 
     row["filename"] = meta.get("filename")
     row["ocr_text"] = ocr_text
@@ -68,9 +80,14 @@ def main():
     if not META_FOLDER.exists():
         raise SystemExit(f"Missing metadata folder: {META_FOLDER}")
 
+    if not TEXT_FOLDER.exists():
+        print(f"Warning: fulltext folder does not exist: {TEXT_FOLDER}")
+        print("Set GR_FULLTEXT_DIR or place files under backend/maha_grs/fulltext")
+
     files = sorted(META_FOLDER.glob("*.json"))
     print(f"Found {len(files)} metadata JSON files.")
-    print(f"Fulltext dir: {TEXT_FOLDER}")
+    print(f"Metadata dir : {META_FOLDER}")
+    print(f"Fulltext dir : {TEXT_FOLDER}")
 
     db = Database()
     print(f"Connected. Existing rows: {db.count()}")
@@ -113,7 +130,6 @@ def main():
 
     db.commit()
     total = db.count()
-    db.close()
 
     print(
         f"Done. upserted={ok} fail={fail} missing_txt={missing_txt} "
@@ -121,6 +137,30 @@ def main():
     )
     if fail:
         print(f"See errors in {ERROR_LOG}")
+
+    if RUN_EMBED_AFTER and ok > 0:
+        print("\nINGEST_RUN_EMBED=true — generating embeddings...")
+        try:
+            from embeddings.embed import generate_embeddings
+
+            generate_embeddings(only_missing=True, db=db)
+        except Exception as e:
+            print(f"Warning: embedding generation failed ({e}).")
+
+    if SYNC_NEO4J and ok > 0:
+        print("\nINGEST_SYNC_NEO4J=true — syncing citation graph to Neo4j...")
+        try:
+            from graph.neo4j_loader import Neo4jLoader
+
+            loader = Neo4jLoader(db=db)
+            loader.load_graph(clear=False)
+            loader.close()
+            print("Neo4j graph sync complete.")
+        except Exception as e:
+            print(f"Warning: Neo4j sync failed ({e}). Run graph.neo4j_loader manually.")
+
+    run_post_ingest_validation(db=db)
+    db.close()
 
 
 if __name__ == "__main__":

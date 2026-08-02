@@ -1,0 +1,373 @@
+[
+  {
+    "id": "government_resolution",
+    "canonical_en": "Government Resolution",
+    "canonical_mr": "शासन निर्णय",
+    "variants": ["GR", "Govt Resolution", "Government Resol.", "शासन निणय", "शासन निर्णयां"],
+    "context_note": "Use 'शासन निर्णय' in operative text; 'GR' only in internal cross-references"
+  },
+  {
+    "id": "government_circular",
+    "canonical_en": "Government Circular",
+    "canonical_mr": "शासन परिपत्रक",
+    "variants": ["Govt Circular", "G.R. Circular", "शासन परिपत्र", "परिपत्रक"],
+    "context_note": "Distinguish from GR — circulars are administrative instructions, not resolutions"
+  },
+  {
+    "id": "competent_authority",
+    "canonical_en": "competent authority",
+    "canonical_mr": "सक्षम प्राधिकरण",
+    "variants": ["competent auth.", "competent officer", "सक्षम अधिकारी", "सक्षम अधिकार"],
+    "context_note": "Formal operative clauses must use 'सक्षम प्राधिकरण', not generic 'officer'"
+  },
+  {
+    "id": "administrative_department",
+    "canonical_en": "Administrative Department",
+    "canonical_mr": "प्रशासकीय विभाग",
+    "variants": ["Admin Dept", "Administrative Dept.", "प्रशासन विभाग", "विभाग"],
+    "context_note": "'विभाग' alone is non-standard when naming the issuing department"
+  },
+  {
+    "id": "finance_department",
+    "canonical_en": "Finance Department",
+    "canonical_mr": "वित्त विभाग",
+    "variants": ["Finance Dept", "FD", "वित्तीय विभाग", "फायनान्स डिपार्टमेंट"],
+    "context_note": "Always 'वित्त विभाग' in Marathi GR text"
+  },
+  {
+    "id": "general_administration_department",
+    "canonical_en": "General Administration Department",
+    "canonical_mr": "सामान्य प्रशासन विभाग",
+    "variants": ["GAD", "Gen. Admin Dept", "सामान्य प्रशासन", "जनरल अॅडमिनिस्ट्रेशन"],
+    "context_note": "Full name required on first reference in operative paragraphs"
+  },
+  {
+    "id": "public_works_department",
+    "canonical_en": "Public Works Department",
+    "canonical_mr": "सार्वजनिक बांधकाम विभाग",
+    "variants": ["PWD", "Public Work Dept", "बांधकाम विभाग", "पब्लिक वर्क्स"],
+    "context_note": "PWD acceptable only in annexures; operative text uses full Marathi name"
+  },
+  {
+    "id": "revenue_department",
+    "canonical_en": "Revenue Department",
+    "canonical_mr": "महसूल विभाग",
+    "variants": ["Revenue Dept", "महसूल विभागाचे", "रेव्हेन्यू डिपार्टमेंट"],
+    "context_note": null
+  },
+  {
+    "id": "home_department",
+    "canonical_en": "Home Department",
+    "canonical_mr": "गृह विभाग",
+    "variants": ["Home Dept", "गृहमंत्रालय", "होम डिपार्टमेंट"],
+    "context_note": "'गृहमंत्रालय' is ministry-level; department is 'गृह विभाग'"
+  },
+  {
+    "id": "rural_development_department",
+    "canonical_en": "Rural Development Department",
+    "canonical_mr": "ग्रामविकास विभाग",
+    "variants": ["RD Dept", "Rural Dev Dept", "ग्रामीण विकास विभाग", "ग्राम विकास"],
+    "context_note": "Standard Maharashtra usage is 'ग्रामविकास विभाग' (one word)"
+  },
+  {
+    "id": "urban_development_department",
+    "canonical_en": "Urban Development Department",
+    "canonical_mr": "नगरविकास विभाग",
+    "variants": ["UDD", "Urban Dev Dept", "नगर विकास विभाग", "अर्बन डेव्हलपमेंट"],
+    "context_note": null
+  },
+  {
+    "id": "tribal_development_department",
+    "canonical_en": "Tribal Development Department",
+    "canonical_mr": "आदिवासी विकास विभाग",
+    "variants": ["TDD", "Tribal Dev Dept", "आदिवासी विकास", "ट्रायबल डेव्हलपमेंट"],
+    "context_note": null
+  },
+  {
+    "id": "school_education_department",
+    "canonical_en": "School Education and Sports Department",
+    "canonical_mr": "शालेय शिक्षण व क्रीडा विभाग",
+    "variants": ["Education Dept", "School Edu Dept", "शिक्षण विभाग", "शालेय शिक्षण विभाग"],
+    "context_note": "Post-2018 reorganisation name includes 'क्रीडा'"
+  },
+  {
+    "id": "higher_technical_education",
+    "canonical_en": "Higher and Technical Education Department",
+    "canonical_mr": "उच्च व तंत्र शिक्षण विभाग",
+    "variants": ["HTE Dept", "Technical Education Dept", "तंत्र शिक्षण विभाग", "उच्च शिक्षण विभाग"],
+    "context_note": "Do not shorten to 'शिक्षण विभाग' when referring to this department"
+  },
+  {
+    "id": "health_department",
+    "canonical_en": "Public Health Department",
+    "canonical_mr": "सार्वजनिक आरोग्य विभाग",
+    "variants": ["Health Dept", "Medical Dept", "आरोग्य विभाग", "हेल्थ डिपार्टमेंट"],
+    "context_note": "'आरोग्य विभाग' alone is acceptable in repeated references only"
+  },
+  {
+    "id": "agriculture_department",
+    "canonical_en": "Agriculture Department",
+    "canonical_mr": "कृषी विभाग",
+    "variants": ["Agri Dept", "कृषी विभागाचे", "अॅग्रीकल्चर डिपार्टमेंट"],
+    "context_note": null
+  },
+  {
+    "id": "water_resources_department",
+    "canonical_en": "Water Resources Department",
+    "canonical_mr": "जलसंपदा विभाग",
+    "variants": ["WRD", "Water Resource Dept", "जल संपदा विभाग", "वॉटर रिसोर्सेस"],
+    "context_note": "'जलसंपदा' is one word in standard usage"
+  },
+  {
+    "id": "energy_department",
+    "canonical_en": "Energy Department",
+    "canonical_mr": "ऊर्जा विभाग",
+    "variants": ["Power Dept", "Energy Dept", "वीज विभाग", "पॉवर डिपार्टमेंट"],
+    "context_note": "'वीज विभाग' is legacy; current name is 'ऊर्जा विभाग'"
+  },
+  {
+    "id": "industries_department",
+    "canonical_en": "Industries Department",
+    "canonical_mr": "उद्योग विभाग",
+    "variants": ["Industry Dept", "उद्योग विभागाचे", "इंडस्ट्रीज डिपार्टमेंट"],
+    "context_note": null
+  },
+  {
+    "id": "law_and_judiciary",
+    "canonical_en": "Law and Judiciary Department",
+    "canonical_mr": "विधी व न्याय विभाग",
+    "variants": ["Law Dept", "Legal Dept", "विधी विभाग", "लॉ डिपार्टमेंट"],
+    "context_note": "Full tripartite name on first reference"
+  },
+  {
+    "id": "planning_department",
+    "canonical_en": "Planning Department",
+    "canonical_mr": "नियोजन विभाग",
+    "variants": ["Planning Dept", "नियोजन विभागाचे", "प्लॅनिंग डिपार्टमेंट"],
+    "context_note": null
+  },
+  {
+    "id": "maharashtra_state",
+    "canonical_en": "State of Maharashtra",
+    "canonical_mr": "महाराष्ट्र राज्य",
+    "variants": ["Maharashtra State", "State Govt of Maharashtra", "महाराष्ट्र शासन राज्य", "महाराष्ट्र स्टेट"],
+    "context_note": "Operative text: 'महाराष्ट्र राज्य' or 'महाराष्ट्र शासन'"
+  },
+  {
+    "id": "maharashtra_government",
+    "canonical_en": "Government of Maharashtra",
+    "canonical_mr": "महाराष्ट्र शासन",
+    "variants": ["Maharashtra Govt", "GoM", "महाराष्ट्र सरकार", "महाराष्ट्र गव्हर्नमेंट"],
+    "context_note": "Never 'सरकार' in formal GR operative clauses — use 'शासन'"
+  },
+  {
+    "id": "state_government",
+    "canonical_en": "State Government",
+    "canonical_mr": "राज्य शासन",
+    "variants": ["State Govt", "राज्य सरकार", "स्टेट गव्हर्नमेंट"],
+    "context_note": "Prefer 'राज्य शासन' over 'राज्य सरकार' in resolutions"
+  },
+  {
+    "id": "cabinet_decision",
+    "canonical_en": "Cabinet decision",
+    "canonical_mr": "मंत्रिमंडळ निर्णय",
+    "variants": ["Cabinet Decision", "Cabinet approval", "मंत्रिमंडळाचा निर्णय", "कॅबिनेट डिसिशन"],
+    "context_note": null
+  },
+  {
+    "id": "chief_minister",
+    "canonical_en": "Chief Minister",
+    "canonical_mr": "मुख्यमंत्री",
+    "variants": ["CM", "Chief Min.", "मुख्य मंत्री", "सीएम"],
+    "context_note": "'मुख्यमंत्री' is one word; 'CM' only in informal annexures"
+  },
+  {
+    "id": "deputy_chief_minister",
+    "canonical_en": "Deputy Chief Minister",
+    "canonical_mr": "उपमुख्यमंत्री",
+    "variants": ["Dy. CM", "Deputy CM", "उप मुख्यमंत्री", "डिप्टी सीएम"],
+    "context_note": null
+  },
+  {
+    "id": "principal_secretary",
+    "canonical_en": "Principal Secretary",
+    "canonical_mr": "प्रधान सचिव",
+    "variants": ["Pr. Secretary", "Principal Secy", "प्रधान सचिवांनी", "प्रिन्सिपल सेक्रेटरी"],
+    "context_note": null
+  },
+  {
+    "id": "secretary",
+    "canonical_en": "Secretary",
+    "canonical_mr": "सचिव",
+    "variants": ["Secy", "Secy.", "सेक्रेटरी", "सचिवांनी"],
+    "context_note": "'सेक्रेटरी' is non-standard in Marathi operative text"
+  },
+  {
+    "id": "collector",
+    "canonical_en": "Collector",
+    "canonical_mr": "जिल्हाधिकारी",
+    "variants": ["District Collector", "Collr", "कलेक्टर", "जिल्हा कलेक्टर"],
+    "context_note": "Use 'जिल्हाधिकारी' in Marathi; English 'Collector' in bilingual headers only"
+  },
+  {
+    "id": "divisional_commissioner",
+    "canonical_en": "Divisional Commissioner",
+    "canonical_mr": "विभागीय आयुक्त",
+    "variants": ["Div. Commissioner", "Commissioner", "आयुक्त", "डिव्हिजनल कमिश्नर"],
+    "context_note": "Bare 'आयुक्त' is ambiguous — specify division when context requires"
+  },
+  {
+    "id": "district",
+    "canonical_en": "district",
+    "canonical_mr": "जिल्हा",
+    "variants": ["Dist.", "Dist", "जिल्ह्याचे", "डिस्ट्रिक्ट"],
+    "context_note": null
+  },
+  {
+    "id": "taluka",
+    "canonical_en": "taluka",
+    "canonical_mr": "तालुका",
+    "variants": ["tehsil", "tahsil", "तहसील", "टालुका"],
+    "context_note": "Maharashtra standard is 'तालुका', not 'तहसील'"
+  },
+  {
+    "id": "gram_panchayat",
+    "canonical_en": "Gram Panchayat",
+    "canonical_mr": "ग्रामपंचायत",
+    "variants": ["GP", "Village Panchayat", "ग्राम पंचायत", "व्हिलेज पंचायत"],
+    "context_note": "'ग्रामपंचायत' is one word"
+  },
+  {
+    "id": "zilla_parishad",
+    "canonical_en": "Zilla Parishad",
+    "canonical_mr": "जिल्हा परिषद",
+    "variants": ["ZP", "District Council", "जिल्हा परिषदेची", "झेडपी"],
+    "context_note": null
+  },
+  {
+    "id": "municipal_corporation",
+    "canonical_en": "Municipal Corporation",
+    "canonical_mr": "महानगरपालिका",
+    "variants": ["Muni. Corp", "Corporation", "महानगर पालिका", "म्युनिसिपल कॉर्पोरेशन"],
+    "context_note": "'महानगरपालिका' is one word"
+  },
+  {
+    "id": "scheduled_castes",
+    "canonical_en": "Scheduled Castes",
+    "canonical_mr": "अनुसूचित जाती",
+    "variants": ["SC", "Scheduled Caste", "अनुसूचित जमाती", "एससी"],
+    "context_note": "Expand on first use in operative paragraphs"
+  },
+  {
+    "id": "scheduled_tribes",
+    "canonical_en": "Scheduled Tribes",
+    "canonical_mr": "अनुसूचित जमाती",
+    "variants": ["ST", "Scheduled Tribe", "अनुसूचित आदिवासी", "एसटी"],
+    "context_note": "Do not confuse with 'अनुसूचित जाती'"
+  },
+  {
+    "id": "other_backward_classes",
+    "canonical_en": "Other Backward Classes",
+    "canonical_mr": "इतर मागास वर्ग",
+    "variants": ["OBC", "Backward Classes", "मागास वर्ग", "ओबीसी"],
+    "context_note": "Full form on first reference"
+  },
+  {
+    "id": "economically_weaker_section",
+    "canonical_en": "Economically Weaker Section",
+    "canonical_mr": "आर्थिकदृष्ट्या दुर्बल घटक",
+    "variants": ["EWS", "Economically Weak Section", "आर्थिक दुर्बल घटक", "ईडब्ल्यूएस"],
+    "context_note": null
+  },
+  {
+    "id": "rupees",
+    "canonical_en": "rupees",
+    "canonical_mr": "रुपये",
+    "variants": ["Rs.", "Rs", "INR", "रु.", "रुपया"],
+    "context_note": "Financial operative clauses: 'रुपये' with figure in parentheses"
+  },
+  {
+    "id": "lakh",
+    "canonical_en": "lakh",
+    "canonical_mr": "लाख",
+    "variants": ["lac", "Lacs", "लक्ष", "लाखांची"],
+    "context_note": "'लक्ष' is non-standard for currency magnitude in GRs"
+  },
+  {
+    "id": "crore",
+    "canonical_en": "crore",
+    "canonical_mr": "कोटी",
+    "variants": ["cr", "Crs", "करोड", "कोट"],
+    "context_note": "Marathi formal: 'कोटी'; 'करोड' is Hindi-influenced variant"
+  },
+  {
+    "id": "financial_year",
+    "canonical_en": "financial year",
+    "canonical_mr": "आर्थिक वर्ष",
+    "variants": ["FY", "fiscal year", "वित्त वर्ष", "फायनान्शियल इयर"],
+    "context_note": null
+  },
+  {
+    "id": "budget_grant",
+    "canonical_en": "budget grant",
+    "canonical_mr": "अर्थसंकल्पीय तरतूद",
+    "variants": ["budgetary grant", "budget provision", "बजेट ग्रँट", "अर्थसंकल्प तरतूद"],
+    "context_note": "Finance concurrence paragraphs require 'अर्थसंकल्पीय तरतूद'"
+  },
+  {
+    "id": "reappropriation",
+    "canonical_en": "reappropriation",
+    "canonical_mr": "पुनर्विनियोग",
+    "variants": ["re-appropriation", "re appropriation", "पुनर विनियोग", "रीअप्रोप्रिएशन"],
+    "context_note": "'पुनर्विनियोग' is one word"
+  },
+  {
+    "id": "sanction",
+    "canonical_en": "sanction",
+    "canonical_mr": "मंजुरी",
+    "variants": ["sanctioned", "approval", "संक्षन", "सॅंक्शन"],
+    "context_note": "Avoid transliteration 'संक्षन' — use 'मंजुरी' or 'मंजूर'"
+  },
+  {
+    "id": "hereby_sanctioned",
+    "canonical_en": "is hereby sanctioned",
+    "canonical_mr": "यान्वये मंजूर करण्यात येत आहे",
+    "variants": ["hereby approved", "is sanctioned", "यान्वये मंजूर", "मंजूर केले जाते"],
+    "context_note": "Standard operative closing formula for financial GRs"
+  },
+  {
+    "id": "subject_to",
+    "canonical_en": "subject to",
+    "canonical_mr": "अधीन राहून",
+    "variants": ["subjected to", "sub to", "सब्जेक्ट टू", "अधीन"],
+    "context_note": "Bare 'अधीन' without 'राहून' is incomplete in operative clauses"
+  },
+  {
+    "id": "notwithstanding",
+    "canonical_en": "notwithstanding",
+    "canonical_mr": "वगळता",
+    "variants": ["not withstanding", "not-withstanding", "नॉटविथस्टँडिंग", "वगळून"],
+    "context_note": "'वगळता' is preferred in supersession clauses"
+  },
+  {
+    "id": "supersede",
+    "canonical_en": "supersede",
+    "canonical_mr": "रद्द करण्यात येत आहे",
+    "variants": ["superseded", "cancel", "सुपरसीड", "रद्द"],
+    "context_note": "Supersession operative formula — not bare 'रद्द' alone"
+  },
+  {
+    "id": "with_immediate_effect",
+    "canonical_en": "with immediate effect",
+    "canonical_mr": "तात्काळ अंमलबजावणीसाठी",
+    "variants": ["w.e.f. immediately", "immediate effect", "तातडीने", "विथ इमिजिएट इफेक्ट"],
+    "context_note": "Standard temporal operative phrase"
+  },
+  {
+    "id": "with_effect_from",
+    "canonical_en": "with effect from",
+    "canonical_mr": "दिनांक ... पासून अंमलबजावणीसाठी",
+    "variants": ["w.e.f.", "effective from", "पासून लागू", "विथ इफेक्ट फ्रॉम"],
+    "context_note": "Date must accompany this phrase in operative text"
+  }
+]

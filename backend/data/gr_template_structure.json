@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "description": "Expected Maharashtra GR draft structure for template compliance checking.",
+  "sections": [
+    {
+      "id": "header_block",
+      "label": "Header / document-type block",
+      "label_mr": "शीर्षक / दस्तऐवज प्रकार",
+      "required": true,
+      "severity_missing": "high",
+      "severity_misordered": "medium",
+      "weight": 1.0
+    },
+    {
+      "id": "subject_line",
+      "label": "Subject line",
+      "label_mr": "विषय ओळ",
+      "required": true,
+      "severity_missing": "high",
+      "severity_misordered": "high",
+      "weight": 1.0
+    },
+    {
+      "id": "references_section",
+      "label": "References (वाचा) section",
+      "label_mr": "वाचा / संदर्भ",
+      "required": false,
+      "severity_missing": "low",
+      "severity_misordered": "low",
+      "weight": 0.5
+    },
+    {
+      "id": "operative_section",
+      "label": "Operative / decision paragraph(s)",
+      "label_mr": "शासन निर्णय / ऑपरेटिव्ह परिच्छेद",
+      "required": true,
+      "severity_missing": "high",
+      "severity_misordered": "medium",
+      "weight": 1.0
+    },
+    {
+      "id": "signatory_block",
+      "label": "Signatory block",
+      "label_mr": "स्वाक्षरी खंड",
+      "required": true,
+      "severity_missing": "high",
+      "severity_misordered": "medium",
+      "weight": 1.0
+    }
+  ]
+}

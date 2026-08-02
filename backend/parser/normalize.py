@@ -124,6 +124,9 @@ def normalize_gr_number(gr):
     gr = re.sub(r"\(\s*", "(", gr)
     gr = re.sub(r"\s*\)", ")", gr)
 
+    # Normalize प्र.क्र. variants to a consistent token for matching
+    gr = re.sub(r"प्र\.?\s*क्र\.?\s*", "प्रक्र", gr)
+
     # Fix department aliases
     for old, new in DEPARTMENT_ALIASES.items():
         gr = gr.replace(old, new)
@@ -161,6 +164,26 @@ def canonical_gr_number(gr):
     return gr
 
 
+# Preserve common English acronyms/codes in Marathi subject lines
+PRESERVED_ENGLISH_TOKENS = frozenset({
+    "AICTE", "ITI", "UGC", "NBA", "NAAC", "NTA", "NEET", "JEE", "GATE",
+    "CBSE", "ICSE", "SSC", "HSC", "MSBTE", "DBT", "DST", "ICAR", "NABARD",
+    "RTE", "SC", "ST", "OBC", "EWS", "PWD", "PHD", "PDF", "GR", "GOI",
+})
+
+
+def apply_light_text_fixes(text):
+    """Punctuation normalization without I/l/o OCR substitutions (preserves AICTE, ITI, etc.)."""
+    if not text:
+        return text
+    for old, new in (
+        ("—", "-"), ("–", "-"), ("−", "-"),
+        ("“", '"'), ("”", '"'), ("‘", "'"), ("’", "'"),
+    ):
+        text = text.replace(old, new)
+    return text
+
+
 # --------------------------------------------------
 # Subject
 # --------------------------------------------------
@@ -170,25 +193,24 @@ def normalize_subject(subject):
     if not subject:
         return None
 
-    subject = apply_ocr_fixes(subject)
-
+    subject = apply_light_text_fixes(subject)
     subject = normalize_digits(subject)
 
-    # remove OCR garbage like "fag"
+    # Strip lowercase-only OCR garbage but keep acronyms (AICTE, ITI) and mixed-case tokens
+    def _subject_token_filter(match: re.Match) -> str:
+        token = match.group(0)
+        if token.upper() in PRESERVED_ENGLISH_TOKENS:
+            return token
+        if token.isupper() and len(token) >= 2:
+            return token
+        if any(c.isupper() for c in token):
+            return token
+        return ""
 
-    subject = re.sub(
-
-        r"\b[a-zA-Z]{2,}\b",
-
-        "",
-
-        subject
-
-    )
-
+    subject = re.sub(r"\b[a-z]{3,}\b", _subject_token_filter, subject)
     subject = normalize_whitespace(subject)
 
-    return subject
+    return subject or None
 
 
 # --------------------------------------------------
@@ -201,7 +223,7 @@ def parse_gr_number(gr):
         "year": None,
         "file_number": None,
         "subfile_number": None,
-        "section": None
+        "section": None,
     }
 
     if not gr:
@@ -209,26 +231,56 @@ def parse_gr_number(gr):
 
     gr = normalize_gr_number(gr)
 
-    pattern = (
-        r"^(?P<department>.+?)-"
-        r"(?P<year>\d{4})"
-        r"/\((?P<file>\d+)"
-        r"/(?P<subfile>\d+)\)"
-        r"/(?P<section>.+)$"
-    )
+    patterns = [
+        (
+            r"^(?P<department>.+?)-"
+            r"(?P<year>\d{4})"
+            r"/\((?P<file>\d+)"
+            r"/(?P<subfile>\d+)\)"
+            r"/(?P<section>.+)$"
+        ),
+        (
+            r"^(?P<department>.+?)-"
+            r"(?P<year>\d{4})"
+            r"/प्रक्र(?P<file>\d+)"
+            r"/(?P<section>.+)$"
+        ),
+        (
+            r"^(?P<department>.+?)-"
+            r"(?P<year>\d{4})"
+            r"/\((?P<file>\d+)\)"
+            r"/(?P<section>.+)$"
+        ),
+        (
+            r"^(?P<department>.+?)-"
+            r"(?P<year>\d{4})"
+            r"/(?P<file>\d+)"
+            r"/(?P<subfile>\d+)"
+            r"/(?P<section>.+)$"
+        ),
+        (
+            r"^(?P<department>.+?)-"
+            r"(?P<year>\d{4})"
+            r"/(?P<section>.+)$"
+        ),
+    ]
 
-    m = re.match(pattern, gr)
+    for pattern in patterns:
+        m = re.match(pattern, gr)
+        if not m:
+            continue
+        groups = m.groupdict()
+        file_num = groups.get("file")
+        subfile_num = groups.get("subfile")
+        return {
+            "department_code": groups["department"].strip(),
+            "year": int(groups["year"]),
+            "file_number": int(file_num) if file_num else None,
+            "subfile_number": int(subfile_num) if subfile_num else None,
+            "section": (groups.get("section") or "").strip() or None,
+        }
 
-    if not m:
-        return empty
-
-    return {
-        "department_code": m.group("department").strip(),
-        "year": int(m.group("year")),
-        "file_number": int(m.group("file")),
-        "subfile_number": int(m.group("subfile")),
-        "section": m.group("section").strip()
-    }
+    return empty
 
 def normalize_references(refs):
 

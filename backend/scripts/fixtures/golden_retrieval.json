@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "description": "Golden retrieval expectations for Maharashtra GR semantic search",
+  "cases": [
+    {
+      "id": "iti_scholarship_fixture",
+      "query_file": "01_short_simple.txt",
+      "top_k": 15,
+      "expected_subject_keywords": ["शिष्यवृत्ती", "scholarship", "ITI", "आयटीआय"],
+      "expected_department_keywords": ["शिक्षण", "education"],
+      "min_recall_at_k": 1
+    },
+    {
+      "id": "iti_category_b_timeline",
+      "query_text": "ITI scholarship Category B processed within 15 working days of application Maharashtra",
+      "top_k": 15,
+      "expected_subject_keywords": ["शिष्यवृत्ती", "scholarship", "ITI"],
+      "min_recall_at_k": 1
+    },
+    {
+      "id": "technical_education_grants",
+      "query_text": "technical education grants higher and technical education department Maharashtra",
+      "top_k": 10,
+      "expected_department_keywords": ["तंत्र", "technical", "शिक्षण"],
+      "min_recall_at_k": 1
+    },
+    {
+      "id": "fee_structure_policy",
+      "query_text": "ITI fee structure streamlining government resolution",
+      "top_k": 10,
+      "expected_subject_keywords": ["शुल्क", "fee", "ITI"],
+      "min_recall_at_k": 1
+    }
+  ]
+}

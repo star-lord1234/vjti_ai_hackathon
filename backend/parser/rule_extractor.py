@@ -11,6 +11,13 @@ import re
 from typing import List, Optional
 
 from parser.metadata import GRMetadata
+from parser.section_patterns import (
+    DOC_TYPE_RE,
+    GOVT_LINE_RE,
+    REF_SECTION_START_RE,
+    REF_SECTION_STOP_RE,
+    SUBJECT_STOP,
+)
 
 
 # Fields the hybrid pipeline treats as required for a complete rule extraction.
@@ -32,11 +39,7 @@ DOCUMENT_TYPES = (
     "अधिसूचना",
 )
 
-# Longer phrases first so "शासन पूरक पत्र" wins over "शासन पत्र".
-_DOC_TYPE_RE = re.compile(
-    r"(शासन\s*पूरक\s*पत्र|शासन\s*परिपत्रक|शासन\s*निर्णय|"
-    r"शासन\s*पत्र|कार्यालयीन\s*आदेश|शासन\s*आदेश|अधिसूचना)"
-)
+_DOC_TYPE_RE = DOC_TYPE_RE
 
 _MARATHI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 
@@ -68,22 +71,7 @@ _MONTHS = {
     "december": 12,
 }
 
-_SUBJECT_STOP = (
-    "महाराष्ट्र शासन",
-    "महाराष्ट् शासन",
-    "महाराष्ट॒ शासन",
-    "वाचा",
-    "बाचा",
-    "संदर्भ",
-    "प्रस्तावना",
-    "दिनांक",
-    "शासन निर्णय",
-    "शासन पत्र",
-    "शासन परिपत्रक",
-    "शासन आदेश",
-    "कार्यालयीन आदेश",
-    "अधिसूचना",
-)
+_SUBJECT_STOP = SUBJECT_STOP
 
 
 def _header_lines(text: str, max_lines: int = 60) -> List[str]:
@@ -137,15 +125,9 @@ _REF_ITEM_START = re.compile(
     r"[\.\)\]]\s*"
 )
 
-_REF_SECTION_START = re.compile(
-    r"^(वाचा|बाचा|संदर्भ|Reference)(?:\s|[.:ः\-–—]|$)",
-    re.IGNORECASE,
-)
+_REF_SECTION_START = REF_SECTION_START_RE
 
-_REF_SECTION_STOP = re.compile(
-    r"^(प्रस्तावना|शासन\s*निर्णय\s*[:：\-]|शासन\s*परिपत्रक\s*[:：\-]|"
-    r"परिपत्रक\s*[:：\-]|आदेश\s*[:：\-]|शासन\s*आदेश\s*[:：\-])"
-)
+_REF_SECTION_STOP = REF_SECTION_STOP_RE
 
 
 def _ref_date(raw: str) -> Optional[str]:
@@ -273,7 +255,7 @@ def extract_document_type(lines: List[str]) -> Optional[str]:
     return None
 
 
-_GOVT_LINE_RE = re.compile(r"महाराष्ट\S*\s*शासन")
+_GOVT_LINE_RE = GOVT_LINE_RE
 
 
 def extract_department(lines: List[str]) -> Optional[str]:

@@ -4,9 +4,10 @@ AI Reasoning endpoints router (Q&A, pairwise GR comparison, conflict detection).
 
 from __future__ import annotations
 
+import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -15,8 +16,15 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from reasoning.analyze_models import ConflictCheckSection, DraftAnalysisResponse
+from reasoning.glossary import run_glossary_check
+from reasoning.glossary.models import GlossaryCheckSection
+from reasoning.template import run_template_check
+from reasoning.template.models import TemplateCheckSection
 from reasoning.llm_reasoner import answer_query, check_conflict, compare_grs
 from reasoning.models import ComparisonResult, ConflictFinding, QueryAnswer
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/reasoning", tags=["reasoning"])
 
@@ -92,3 +100,61 @@ def reasoning_conflict(body: ConflictRequest) -> ConflictFinding:
             status_code=502,
             detail=f"AI conflict detection engine failed: {e}",
         )
+
+
+@router.post("/glossary", response_model=GlossaryCheckSection)
+def reasoning_glossary(body: ConflictRequest) -> GlossaryCheckSection:
+    """
+    Bilingual terminology consistency check against the seeded GR glossary.
+    Returns status=unavailable (not HTTP 5xx) when all Groq API keys are on cooldown.
+    """
+    return run_glossary_check(body.draft_text.strip())
+
+
+@router.post("/template", response_model=TemplateCheckSection)
+def reasoning_template(body: ConflictRequest) -> TemplateCheckSection:
+    """Rule-based GR template / structure compliance check (no LLM)."""
+    return run_template_check(body.draft_text.strip())
+
+
+@router.post("/analyze", response_model=DraftAnalysisResponse)
+def reasoning_analyze(body: ConflictRequest) -> DraftAnalysisResponse:
+    """
+    Run conflict, glossary, and template checks in parallel where possible.
+    Always returns HTTP 200 with per-section status — partial success is supported.
+    """
+    draft = body.draft_text.strip()
+
+    def _run_conflict() -> ConflictFinding:
+        return check_conflict(draft_input=draft, top_k=body.top_k, hops=body.hops)
+
+    def _run_glossary() -> GlossaryCheckSection:
+        return run_glossary_check(draft)
+
+    def _run_template() -> TemplateCheckSection:
+        return run_template_check(draft)
+
+    conflict_section: ConflictCheckSection
+    glossary_section: GlossaryCheckSection
+    template_section: TemplateCheckSection
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        conflict_future = pool.submit(_run_conflict)
+        glossary_future = pool.submit(_run_glossary)
+        template_future = pool.submit(_run_template)
+
+        try:
+            conflict_result = conflict_future.result()
+            conflict_section = ConflictCheckSection(status="ok", result=conflict_result)
+        except Exception as exc:
+            logger.exception("Conflict check failed during /analyze: %s", exc)
+            conflict_section = ConflictCheckSection(status="error", reason=str(exc))
+
+        glossary_section = glossary_future.result()
+        template_section = template_future.result()
+
+    return DraftAnalysisResponse(
+        conflict_check=conflict_section,
+        glossary_check=glossary_section,
+        template_check=template_section,
+    )

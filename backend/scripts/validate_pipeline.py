@@ -6,8 +6,7 @@ Validates that for given draft GR fixture files:
 1. Direct in-process call (`reasoning.llm_reasoner.check_conflict`) produces consistent
    ConflictFinding outputs when compared against `POST /reasoning/conflict`.
 2. Input text integrity (SHA-256 hash) is tracked.
-3. Differences between non-deterministic LLM runs are evaluated with fuzzy/semantic rules
-   (exact match for `conflicting` boolean, fuzzy match for explanations).
+3. Differences between non-deterministic LLM runs are evaluated with tighter rules.
 
 Saves backend execution results to `backend/scripts/fixtures_backend_output.json`.
 Returns exit code 0 if all fixtures pass validation, or 1 if any critical mismatch occurs.
@@ -18,8 +17,9 @@ import os
 import json
 import time
 import hashlib
+import re
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Set
 
 # Ensure backend root is in sys.path
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -34,59 +34,122 @@ FIXTURES_DIR = SCRIPT_DIR / "fixtures"
 OUTPUT_FILE = SCRIPT_DIR / "fixtures_backend_output.json"
 API_ENDPOINT = "http://localhost:8000/reasoning/conflict"
 
+# Tighter tolerances than earlier harness (see planning.txt §6)
+CONFIDENCE_TOLERANCE = float(os.getenv("VALIDATE_CONFIDENCE_TOLERANCE", "0.20"))
+CLAUSE_COUNT_TOLERANCE = int(os.getenv("VALIDATE_CLAUSE_COUNT_TOLERANCE", "1"))
+EXPLANATION_LEN_MIN_RATIO = float(os.getenv("VALIDATE_EXPLANATION_MIN_RATIO", "0.5"))
+EXPLANATION_LEN_MAX_RATIO = float(os.getenv("VALIDATE_EXPLANATION_MAX_RATIO", "2.0"))
+EXPLANATION_TOKEN_OVERLAP_MIN = float(
+    os.getenv("VALIDATE_EXPLANATION_TOKEN_OVERLAP", "0.12")
+)
+
 
 def compute_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _token_set(text: str) -> Set[str]:
+    return {
+        t
+        for t in re.split(r"\W+", text.lower())
+        if len(t) >= 3
+    }
+
+
+def _token_overlap_ratio(a: str, b: str) -> float:
+    ta, tb = _token_set(a), _token_set(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
 def compare_results(direct: Dict[str, Any], http: Dict[str, Any]) -> Dict[str, Any]:
     """
     Compare field-by-field between direct in-process result and HTTP API result.
-    Note: LLM calls are non-deterministic; explanation texts may vary slightly,
-    but boolean status and affected GRs should be consistent.
     """
-    # 1. Conflicting boolean: Must be exact match
     conflicting_match = direct.get("conflicting") == http.get("conflicting")
 
-    # 2. Confidence: Must be within 0.45 tolerance
     conf_diff = abs(float(direct.get("confidence", 0)) - float(http.get("confidence", 0)))
-    confidence_match = conf_diff <= 0.45
+    confidence_match = conf_diff <= CONFIDENCE_TOLERANCE
 
-    # 3. Affected GRs: Check for overlap in GR canonical numbers or labels
-    direct_grs = {g.get("gr_number_canonical") or g.get("label") for g in direct.get("affected_grs", [])}
-    http_grs = {g.get("gr_number_canonical") or g.get("label") for g in http.get("affected_grs", [])}
-    # Match if both are empty or if there is any intersection
+    direct_grs = {
+        g.get("gr_number_canonical") or g.get("label")
+        for g in direct.get("affected_grs", [])
+        if g.get("gr_number_canonical") or g.get("label")
+    }
+    http_grs = {
+        g.get("gr_number_canonical") or g.get("label")
+        for g in http.get("affected_grs", [])
+        if g.get("gr_number_canonical") or g.get("label")
+    }
+
     if not direct_grs and not http_grs:
         grs_match = True
+    elif direct.get("conflicting") or http.get("conflicting"):
+        grs_match = len(direct_grs.intersection(http_grs)) > 0
     else:
-        grs_match = len(direct_grs.intersection(http_grs)) > 0 or direct_grs == http_grs
+        grs_match = direct_grs == http_grs
 
-    # 4. Explanation: Fuzzy check (both non-empty and length within 3x of each other)
     d_exp = direct.get("explanation", "").strip()
     h_exp = http.get("explanation", "").strip()
     if not d_exp and not h_exp:
         explanation_match = True
     elif d_exp and h_exp:
         len_ratio = len(d_exp) / max(len(h_exp), 1)
-        explanation_match = 0.25 <= len_ratio <= 4.0
+        overlap = _token_overlap_ratio(d_exp, h_exp)
+        explanation_match = (
+            EXPLANATION_LEN_MIN_RATIO <= len_ratio <= EXPLANATION_LEN_MAX_RATIO
+            or overlap >= EXPLANATION_TOKEN_OVERLAP_MIN
+        )
     else:
         explanation_match = False
 
-    # 5. Conflicting Clauses: Count difference check
     d_clauses = direct.get("conflicting_clauses", [])
     h_clauses = http.get("conflicting_clauses", [])
-    clauses_match = abs(len(d_clauses) - len(h_clauses)) <= 3
+    clauses_match = abs(len(d_clauses) - len(h_clauses)) <= CLAUSE_COUNT_TOLERANCE
 
-    overall_pass = conflicting_match and confidence_match and (grs_match or not direct.get("conflicting"))
+    # When either path reports conflict, require GR overlap and clause parity
+    if direct.get("conflicting") or http.get("conflicting"):
+        overall_pass = (
+            conflicting_match
+            and confidence_match
+            and grs_match
+            and clauses_match
+            and explanation_match
+        )
+    else:
+        overall_pass = conflicting_match and confidence_match
 
     return {
         "overall_pass": overall_pass,
         "fields": {
-            "conflicting": {"pass": conflicting_match, "direct": direct.get("conflicting"), "http": http.get("conflicting")},
-            "confidence": {"pass": confidence_match, "direct": direct.get("confidence"), "http": http.get("confidence")},
-            "affected_grs": {"pass": grs_match, "direct_count": len(direct_grs), "http_count": len(http_grs)},
-            "explanation": {"pass": explanation_match, "direct_len": len(d_exp), "http_len": len(h_exp)},
-            "conflicting_clauses": {"pass": clauses_match, "direct_count": len(d_clauses), "http_count": len(h_clauses)},
+            "conflicting": {
+                "pass": conflicting_match,
+                "direct": direct.get("conflicting"),
+                "http": http.get("conflicting"),
+            },
+            "confidence": {
+                "pass": confidence_match,
+                "direct": direct.get("confidence"),
+                "http": http.get("confidence"),
+                "diff": round(conf_diff, 4),
+            },
+            "affected_grs": {
+                "pass": grs_match,
+                "direct_count": len(direct_grs),
+                "http_count": len(http_grs),
+            },
+            "explanation": {
+                "pass": explanation_match,
+                "direct_len": len(d_exp),
+                "http_len": len(h_exp),
+                "token_overlap": round(_token_overlap_ratio(d_exp, h_exp), 4),
+            },
+            "conflicting_clauses": {
+                "pass": clauses_match,
+                "direct_count": len(d_clauses),
+                "http_count": len(h_clauses),
+            },
         },
     }
 
@@ -95,9 +158,14 @@ def main():
     print("=" * 80)
     print("BACKEND PIPELINE VALIDATION HARNESS")
     print(f"Target API Endpoint: {API_ENDPOINT}")
+    print(
+        f"Tolerances: confidence±{CONFIDENCE_TOLERANCE}, "
+        f"clauses±{CLAUSE_COUNT_TOLERANCE}, "
+        f"explanation len [{EXPLANATION_LEN_MIN_RATIO},{EXPLANATION_LEN_MAX_RATIO}] "
+        f"or token overlap ≥{EXPLANATION_TOKEN_OVERLAP_MIN}"
+    )
     print("=" * 80)
 
-    # Verify HTTP backend is reachable first
     try:
         health_res = httpx.get("http://localhost:8000/health", timeout=5.0)
         if health_res.status_code != 200:
@@ -109,7 +177,9 @@ def main():
         print("Please start uvicorn server: 'uvicorn api.main:app --reload --host 0.0.0.0 --port 8000'")
         sys.exit(1)
 
-    fixture_files = sorted(list(FIXTURES_DIR.glob("*.txt")))
+    fixture_files = sorted(
+        p for p in FIXTURES_DIR.glob("*.txt") if p.name != "golden_retrieval.json"
+    )
     if not fixture_files:
         print(f"[ERROR] No fixture files found in {FIXTURES_DIR}")
         sys.exit(1)
@@ -126,7 +196,6 @@ def main():
         text_hash = compute_sha256(text)
         short_hash = text_hash[:12]
 
-        # 1. In-process direct call
         t0 = time.time()
         try:
             direct_obj = check_conflict(text)
@@ -137,7 +206,6 @@ def main():
             all_passed = False
             continue
 
-        # 2. HTTP API call
         t1 = time.time()
         try:
             http_res = httpx.post(API_ENDPOINT, json={"draft_text": text}, timeout=60.0)
@@ -152,7 +220,6 @@ def main():
             all_passed = False
             continue
 
-        # 3. Field diff & fuzzy validation
         diff_res = compare_results(direct_dict, http_dict)
         status_str = "PASS" if diff_res["overall_pass"] else "FAIL"
 
@@ -173,7 +240,6 @@ def main():
             "field_diff": diff_res,
         }
 
-    # Save outputs for comparison script
     OUTPUT_FILE.write_text(json.dumps(recorded_outputs, indent=2), encoding="utf-8")
     print("-" * 80)
     print(f"Backend output recorded to: {OUTPUT_FILE}")

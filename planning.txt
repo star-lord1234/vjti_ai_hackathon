@@ -1,0 +1,430 @@
+================================================================================
+PLANNING: ACCURACY GAPS IN SEMANTIC SEARCH & CONFLICT DETECTION
+================================================================================
+Generated: 2026-08-02
+Scope: Maharashtra GR corpus — retrieval, graph expansion, LLM reasoning, ingestion,
+        API/frontend, and evaluation.
+
+This document catalogs known flaws that can produce subpar, misleading, or inaccurate
+conflict-detection results. Severity: HIGH / MEDIUM / LOW.
+
+
+================================================================================
+EXECUTIVE SUMMARY
+================================================================================
+
+The conflict pipeline is document-level RAG, not clause-level retrieval:
+
+  Draft text
+    → first 500 chars as semantic query seed
+    → pgvector (one 768-dim vector per GR, built from ~500 chars of OCR)
+    → Neo4j CITES graph expansion (undirected, min 1 hop)
+    → context block (600-char OCR excerpts, 8k char cap)
+    → Groq LLM (draft truncated to 3000 chars) → ConflictFinding JSON
+
+Accuracy is capped primarily by RETRIEVAL RECALL and CONTEXT TRUNCATION. The LLM
+can only reason about conflicts in GRs it actually sees with enough operative text.
+Several failure modes degrade silently (Neo4j down, stale embeddings, weak vector scores).
+
+Cross-cutting architectural mismatch: the task is clause-level conflict detection;
+the architecture retrieves whole documents from header-heavy embeddings.
+
+
+================================================================================
+1. SEMANTIC SEARCH / EMBEDDINGS (pgvector)
+================================================================================
+
+[HIGH] One vector per entire GR — no chunking
+  Files: backend/database/schema.sql (embedding vector(768) on gr_documents)
+         backend/embeddings/embed_text.py, backend/embeddings/embed.py
+  Problem: Each GR gets a single embedding. Long Marathi resolutions encode almost
+           none of their operative clauses in vector space.
+  Impact: Semantic search matches on subject/department/header similarity, not on
+           the specific policy language that actually conflicts with a draft clause.
+
+[HIGH] Embedding input truncated to 500 chars of OCR
+  File: backend/embeddings/embed_text.py (DEFAULT_MAX_OCR_CHARS = 500)
+  Problem: build_embedding_text() = subject_mr + department + gr_number_canonical +
+           first 500 chars of ocr_text.
+  Impact: Body clauses (eligibility, financial limits, jurisdiction) are invisible
+           to retrieval. Two GRs with similar subjects but different operative rules
+           look alike in embedding space.
+
+[HIGH] Conflict query seed is only the first 500 chars of the draft
+  File: backend/reasoning/llm_reasoner.py (check_conflict, lines ~298–300)
+  Problem: query_seed = draft_text_clean[:500] drives hybrid_search().
+  Impact: Header boilerplate (महाराष्ट्र शासन, department lines, subject) dominates
+           the query. Later sections (Section 4+, financial powers, eligibility) are
+           never used to retrieve candidates. Conflicts in body text are missed.
+
+[HIGH] Stale embeddings after re-ingest
+  File: backend/database/db.py (upsert ON CONFLICT DO UPDATE, lines ~136–152)
+  Problem: Upsert updates ocr_text, subject_mr, citations, etc. but NOT embedding.
+           generate_embeddings(only_missing=True) skips rows that already have vectors.
+  Impact: After OCR fixes or metadata updates, pgvector still searches outdated text.
+           Systematic retrieval drift after pipeline reruns.
+
+[MEDIUM] No similarity score threshold
+  Files: backend/database/db.py (search_embeddings)
+         backend/embeddings/search.py, backend/retrieval/hybrid.py
+  Problem: Always returns top_k results regardless of score. Weak matches (~0.3–0.5)
+           are included with no cutoff.
+  Impact: Irrelevant GRs pollute LLM context and consume the limited OCR excerpt budget.
+           False-positive conflicts and confused explanations.
+
+[MEDIUM] General-purpose embedding model, not legal-domain
+  File: backend/embeddings/embed.py
+  Problem: Default model = paraphrase-multilingual-mpnet-base-v2 (general paraphrase).
+  Impact: Subtle policy distinctions (jurisdiction, caps, eligibility) may not separate
+           well in embedding space for Marathi legal prose.
+
+[MEDIUM] Documents with missing OCR embed metadata only
+  Files: backend/scripts/ingest.py, backend/embeddings/embed_text.py
+  Problem: If fulltext file missing, ocr_text = ""; embedding = subject + dept + GR #.
+  Impact: High collision rate among same-department GRs. Retrieval is keyword-ish, not
+           semantic.
+
+[MEDIUM] Hardcoded VECTOR_DIM = 768 with no model-dimension guard
+  Files: backend/database/schema.sql, backend/embeddings/embed.py
+  Problem: Changing EMBEDDING_MODEL without schema migration breaks inserts/search.
+  Impact: Misconfiguration → garbage similarity or runtime errors.
+
+[MEDIUM] HNSW index with no recall tuning or validation
+  File: backend/database/db.py (HNSW index creation)
+  Problem: Approximate nearest-neighbor; no ef_search tuning or documented recall tests.
+  Impact: True matches may be missed in a large corpus; no way to detect this in prod.
+
+[LOW] Query encoding uses full string; no draft sectioning
+  File: backend/embeddings/search.py
+  Problem: Single encode() call per query; no multi-query or sliding-window strategy.
+  Impact: Long drafts cannot contribute multiple retrieval signals.
+
+
+================================================================================
+2. HYBRID RETRIEVAL (vector + Neo4j graph)
+================================================================================
+
+[HIGH] Graph-expanded GRs rarely get OCR text in LLM context
+  Files: backend/reasoning/context_builder.py (prioritize source == "vector")
+         backend/retrieval/hybrid.py
+  Problem: OCR excerpts go to top vector hits (max_full_text, default 8). Graph hits
+           sorted later; often appear as metadata-only (ID, subject, department).
+  Impact: Citation-linked GRs — often the most legally relevant — cannot be compared
+           clause-by-clause. LLM invents or vague-conflicts against shells.
+
+[MEDIUM] hops=0 API parameter silently forced to 1
+  Files: backend/graph/neo4j_query.py (max(1, int(hops)))
+         backend/api/routes/reasoning.py (allows hops: ge=0)
+  Problem: API documents hops=0 as valid ("no graph expansion") but Neo4j always
+           expands at least 1 hop.
+  Impact: Cannot get pure vector retrieval via API. Unexpected unrelated GRs enter context.
+
+[MEDIUM] Undirected bidirectional CITES traversal
+  File: backend/graph/neo4j_query.py (MATCH (g)-[:CITES*1..hops]-(related))
+  Problem: Expansion is undirected along any citation path.
+  Impact: Hub GRs (frequently cited) pull in distant unrelated documents. Graph noise
+           dilutes vector signal and consumes context slots.
+
+[MEDIUM] Graph expansion failures swallowed silently
+  Files: backend/retrieval/hybrid.py, backend/graph/neo4j_query.py
+  Problem: Neo4j exceptions logged/printed; pipeline continues vector-only. No API flag.
+  Impact: Neo4j outage → degraded recall with no user-visible warning. Results look
+           "complete" but miss citation-linked GRs.
+
+[HIGH] Citation graph completeness depends on regex extraction
+  Files: backend/graph/reference_resolver.py, backend/graph/neo4j_loader.py
+  Problem: Edges built only from regex-extracted GR numbers in citation raw text.
+           OCR-noisy, English-only, or non-standard citations may not resolve.
+  Impact: Incomplete graph → expansion returns nothing useful. Conflict detection
+           falls back to weak vector search alone. Resolution stats logged but no gate.
+
+[MEDIUM] Duplicate canonical GR numbers: lowest id wins silently
+  Files: backend/database/db.py (build_canonical_index)
+         backend/graph/reference_resolver.py
+  Problem: On duplicate gr_number_canonical, first (lowest) id kept; no warning.
+  Impact: Citation edges may point to wrong document version.
+
+[MEDIUM] Postgres and Neo4j are separate manual pipeline steps
+  Files: backend/scripts/ingest.py, backend/embeddings/embed.py,
+         backend/graph/neo4j_loader.py
+  Problem: Ingest → embed → Neo4j load are not atomic or auto-synced.
+  Impact: Drift between PG OCR content and graph edges. Hybrid search operates on
+           inconsistent stores.
+
+
+================================================================================
+3. LLM REASONING & CONTEXT ASSEMBLY
+================================================================================
+
+[HIGH] OCR excerpts capped at 600 chars per GR
+  File: backend/reasoning/context_builder.py (DEFAULT_EXCERPT_CHARS = 600)
+  Problem: Only top max_full_text docs get OCR; each excerpt is 600 chars max.
+  Impact: Operative clauses rarely fit. LLM compares draft against subject/metadata
+           shells → missed conflicts, vague explanations.
+
+[HIGH] Draft truncated to 3000 chars for LLM while retrieval used only [:500]
+  File: backend/reasoning/llm_reasoner.py (line ~327)
+  Problem: LLM sees draft[:3000] but retrieval seed was draft[:500].
+  Impact: LLM may flag conflicts in clauses never retrieved into EXISTING GR CONTEXT
+           (false negatives) or hallucinate against unrelated retrieved GRs.
+
+[MEDIUM] Total context budget 8000 chars drops tail GRs
+  File: backend/reasoning/context_builder.py (MAX_TOTAL_CONTEXT_CHARS = 8000)
+  Problem: Stops adding entries once budget exceeded.
+  Impact: With top_k=15 + graph expansion, tail candidates never reach the LLM.
+           Retrieval work wasted.
+
+[HIGH] Pairwise compare uses only first 2500 chars of OCR per GR
+  File: backend/reasoning/llm_reasoner.py (compare_grs, lines ~219–220)
+  Problem: ocr_a/ocr_b truncated to [:2500].
+  Impact: "No contradiction" results unreliable for full GR comparison.
+
+[MEDIUM] label_map built but never validated post-LLM
+  Files: backend/reasoning/context_builder.py, backend/reasoning/llm_reasoner.py
+  Problem: label_map maps [GR N] → doc metadata; callers discard it after build.
+  Impact: No check that affected_grs labels/numbers were in retrieved context.
+           LLM can cite [GR 12] when only 8 GRs provided → false positives in UI.
+
+[MEDIUM] No supersession / temporal logic despite prompt claims
+  Files: backend/reasoning/llm_reasoner.py (prompt), backend/reasoning/models.py
+  Problem: Prompt asks to detect superseding policies; no gr_date ranking, no
+           supersession edges, no filter for obsolete GRs.
+  Impact: Older superseded GRs retrieved alongside current ones. Conflicts with
+           obsolete law or missed valid supersession recognition.
+
+[MEDIUM] Confidence defaults to 1.0 on parse failure
+  File: backend/reasoning/models.py (clamp_confidence validators)
+  Problem: Malformed LLM confidence → 1.0.
+  Impact: Frontend deriveSeverity() treats as high-confidence finding.
+
+[MEDIUM] Model fallback to llama-3.1-8b-instant on primary failure
+  File: backend/reasoning/llm_reasoner.py (FALLBACK_MODELS)
+  Problem: Under rate limits, conflict analysis may run on 8B model.
+  Impact: Lower reasoning quality, more false positives/negatives.
+
+[MEDIUM] No structured output beyond JSON + one Pydantic retry
+  File: backend/reasoning/llm_reasoner.py (_call_llm_json)
+  Problem: JSON schema injected as text; single retry on validation failure.
+  Impact: Field omission, hallucinated affected_grs may pass unpredictably.
+
+[LOW] Temperature 0.1 — non-deterministic across runs
+  File: backend/reasoning/llm_reasoner.py
+  Impact: Same draft can yield different conflicting boolean; undermines testing/trust.
+
+[LOW] Cross-departmental conflicts requested in prompt but not in schema
+  Files: backend/reasoning/llm_reasoner.py, backend/reasoning/models.py
+  Impact: Signal buried in free-text explanation; UI cannot surface reliably.
+
+[LOW] Inconsistent REASONING_MAX_FULL_TEXT_DOCS defaults
+  Files: backend/reasoning/llm_reasoner.py (default "8")
+         backend/reasoning/context_builder.py (default "4")
+  Impact: Direct calls to build_context_block without max_full_text get fewer OCR docs.
+
+[LOW] Token estimate logged but no hard context-limit guard
+  File: backend/reasoning/llm_reasoner.py
+  Impact: Large drafts + many GRs could hit model context → silent tail truncation.
+
+
+================================================================================
+4. DATA INGESTION & PREPROCESSING
+================================================================================
+
+[MEDIUM] normalize_subject strips English words from subjects
+  File: backend/parser/normalize.py (re.sub r"\b[a-zA-Z]{2,}\b")
+  Problem: Removes English tokens from subject_mr.
+  Impact: Mixed Marathi/English subjects (AICTE, ITI, dept codes) lose searchable terms
+           in metadata and embedding text.
+
+[MEDIUM] Hardcoded fragile ingest path with space in dirname
+  File: backend/scripts/ingest.py
+  Problem: TEXT_FOLDER = ROOT / "maha_grs 2" / "maha_grs" / "fulltext"
+           (actual corpus may live at backend/maha_grs/fulltext)
+  Impact: Wrong path → mass empty OCR ingest → hollow embeddings and conflict checks.
+
+[MEDIUM] parse_gr_number strict regex misses non-standard formats
+  File: backend/parser/normalize.py
+  Problem: Requires dept-YEAR/(file/subfile)/section pattern.
+  Impact: Non-standard GR numbers → empty canonical keys → citation resolution failures.
+
+[MEDIUM] No ingest-time validation of embedding/graph readiness
+  File: backend/scripts/ingest.py
+  Problem: Ingest completes without checking embedding count, Neo4j sync, citation rate.
+  Impact: Operators may run conflict detection on partially built index.
+
+[MEDIUM] Citation extraction regex may miss variants
+  File: backend/graph/reference_resolver.py
+  Problem: Labelled GR regex + one structural fallback.
+  Impact: Missing edges → graph expansion cannot surface related GRs.
+
+
+================================================================================
+5. API & FRONTEND (end-to-end accuracy perception)
+================================================================================
+
+[HIGH] Default sample draft is Central Government, not Maharashtra corpus
+  Files: frontend/src/app/App.tsx (SAMPLE_DRAFT_TEXT)
+         frontend/src/lib/api.ts
+  Problem: Default state, PDF fallback, paste fallback, drag-drop fallback all use a
+           GOI Ministry of Environment resolution. Backend fixtures use Maharashtra text.
+  Impact: Demo/first-run searches Maharashtra GR DB with unrelated Central policy →
+           nonsense retrieval, misleading conflicts, or empty results.
+
+[HIGH] PDF upload does not extract text
+  File: frontend/src/app/App.tsx (FileReader.readAsText on PDF)
+  Problem: On failure, substitutes SAMPLE_DRAFT_TEXT.
+  Impact: Real PDF uploads analyze wrong document unless user pastes text manually.
+
+[MEDIUM] Frontend severity from global confidence, not per-clause
+  File: frontend/src/lib/adapters.ts (deriveSeverity(conflictResult.confidence))
+  Problem: One confidence score applied to all conflicting_clauses.
+  Impact: Strong and weak clause findings get same severity badge.
+
+[MEDIUM] Clause ↔ GR pairing by array index, not semantic link
+  File: frontend/src/lib/adapters.ts (matchedGr = grs[idx] || grs[0])
+  Problem: Assumes conflicting_clauses[i] aligns with affected_grs[i].
+  Impact: LLM order may differ; UI shows wrong GR next to each clause.
+
+[MEDIUM] Health check ignores Neo4j, embeddings, Groq
+  Files: backend/api/main.py (/health), frontend/src/app/App.tsx
+  Problem: Banner only checks Postgres db flag.
+  Impact: "Healthy" system may have empty graph, stale vectors, or broken LLM.
+
+[LOW] Processing steps are cosmetic timers, not pipeline stages
+  File: frontend/src/app/App.tsx
+  Problem: Step animation every 900ms; single checkConflict API call.
+  Impact: UX implies multi-stage analysis that may not have run.
+
+[LOW] AffectedGR TS types mark fields required; backend may return nulls
+  Files: frontend/src/lib/api.ts, backend/reasoning/models.py
+  Impact: Display gaps for incomplete LLM output.
+
+
+================================================================================
+6. EVALUATION & TESTING GAPS
+================================================================================
+
+[HIGH] No automated tests for retrieval or conflict pipeline quality
+  Scope: No test_*.py in backend for semantic_search, hybrid_search,
+         reference_resolver, context_builder, or check_conflict recall.
+  Impact: Regressions in truncation limits, embedding text, Neo4j queries go undetected.
+
+[MEDIUM] Validation harness tolerances extremely loose
+  File: backend/scripts/validate_pipeline.py
+  Problem: Confidence match within 0.45; explanation pass if length ratio 0.25–4.0;
+           clause count diff ≤ 3; overall_pass allows GR mismatch when conflicting=false.
+  Impact: Harness passes while direct vs HTTP paths or quality differ materially.
+           Not a retrieval-accuracy benchmark.
+
+[MEDIUM] Only 3 fixture files; no golden retrieval set
+  Path: backend/scripts/fixtures/
+  Problem: Fixtures test API parity, not correct GR retrieval or conflict labels.
+  Impact: No @k recall, MRR, or labeled conflict dataset.
+
+[MEDIUM] No evaluation of citation resolution rate
+  File: backend/graph/reference_resolver.py
+  Problem: Resolution rate printed at load; no CI threshold (e.g. fail if < 50%).
+  Impact: Low graph quality ships silently.
+
+[LOW] Edge case: short draft treated as file path
+  File: backend/reasoning/llm_reasoner.py (len < 512 && path.exists())
+  Impact: Short query strings matching filesystem paths behave unexpectedly.
+
+[LOW] conflicting=true with empty clauses still surfaces generic finding
+  Files: backend/reasoning/models.py, frontend/src/lib/adapters.ts
+  Impact: Vague "policy conflict" with no actionable references.
+
+
+================================================================================
+7. CROSS-CUTTING ARCHITECTURAL ISSUES
+================================================================================
+
+1. Retrieve-then-reason without recall validation
+   No reranker, no chunk retrieval, no score threshold, no "did we find the right GR?"
+   check before LLM call.
+
+2. Document-level RAG for a clause-level task
+   Conflict detection needs operative clause alignment; architecture cannot locate
+   specific clauses in corpus or draft.
+
+3. LLM as sole conflict judge
+   rule_extractor.py exists for deterministic header/metadata parsing but is not
+   integrated into conflict detection. No deterministic overlap on dates, amounts,
+   jurisdiction keywords to complement semantic retrieval.
+
+4. Silent degradation paths
+   Neo4j failure, missing embeddings, stale vectors, weak scores — all continue with
+   reduced quality and no client-visible degradation flag.
+
+5. Demo data ≠ corpus domain
+   Frontend defaults undermine end-to-end accuracy perception and stakeholder demos.
+
+6. Two-store drift (Postgres + Neo4j)
+   No sync guarantees between OCR updates, embeddings, and graph edges.
+
+
+================================================================================
+8. RECOMMENDED REMEDIATION PRIORITIES
+================================================================================
+
+Phase 1 — Highest impact on accuracy
+  [ ] Chunk OCR + multi-vector retrieval (clause/section chunks with chunk table)
+  [ ] Re-embed on ingest upsert (or null embedding on OCR/subject change)
+  [ ] Multi-segment draft retrieval (not draft[:500] — section embeddings or sliding window)
+  [ ] Increase structured context: larger excerpts or hierarchical summarization per GR
+  [ ] Give graph hits OCR excerpts (not just vector seeds)
+  [ ] Similarity score threshold before adding to LLM context
+  [ ] Replace frontend default with Maharashtra fixture text; real PDF text extraction
+
+Phase 2 — Reliability & graph quality
+  [ ] Fix hops=0 semantics (honor zero-hop = vector-only)
+  [ ] Directed or weighted CITES expansion (outgoing cites > undirected hub traversal)
+  [ ] Post-LLM label_map validation (reject/hallucination-flag unknown [GR N] refs)
+  [ ] Citation resolution rate gate in CI
+  [ ] Extend /health to Neo4j, embedding coverage %, Groq reachability
+  [ ] Unify REASONING_MAX_FULL_TEXT_DOCS default
+
+Phase 3 — Evaluation & product hardening
+  [ ] Golden retrieval set with @k / MRR metrics
+  [ ] Labeled conflict benchmark (precision/recall per clause type)
+  [ ] Tighten validate_pipeline.py tolerances
+  [ ] Per-clause confidence in ConflictFinding schema
+  [ ] Explicit cross_departmental field in schema
+  [ ] Temporal/supersession ranking by gr_date
+
+Phase 4 — Model & infra
+  [ ] Evaluate legal/Marathi-tuned embedding model
+  [ ] HNSW recall benchmarks; tune ef_search
+  [ ] Deterministic rule overlap layer (amounts, dates, jurisdiction keywords)
+  [ ] Reranker (cross-encoder) on top-k vector hits before LLM
+
+
+================================================================================
+9. KEY FILE INDEX
+================================================================================
+
+backend/reasoning/llm_reasoner.py      — conflict detection, Q&A, compare, LLM calls
+backend/reasoning/context_builder.py   — RAG context assembly, truncation budgets
+backend/reasoning/models.py            — Pydantic response schemas, confidence clamping
+backend/retrieval/hybrid.py            — vector + graph hybrid search
+backend/embeddings/embed.py            — embedding generation, model selection
+backend/embeddings/embed_text.py       — embedding input construction (500-char OCR)
+backend/embeddings/search.py           — query encode + vector search
+backend/database/db.py                 — schema, pgvector search, upsert (no embed refresh)
+backend/database/schema.sql            — gr_documents, vector(768), HNSW index
+backend/graph/neo4j_query.py           — graph traversal (hops forced ≥ 1)
+backend/graph/neo4j_loader.py          — Neo4j sync from Postgres
+backend/graph/reference_resolver.py    — citation → GR ID resolution (regex)
+backend/parser/normalize.py            — GR number/subject normalization
+backend/parser/rule_extractor.py       — deterministic header extraction (unused in conflict path)
+backend/scripts/ingest.py              — Postgres ingest (fragile TEXT_FOLDER path)
+backend/scripts/validate_pipeline.py   — loose API parity harness
+backend/api/routes/reasoning.py        — conflict API (hops ge=0)
+backend/api/main.py                      — health (Postgres only)
+frontend/src/app/App.tsx               — upload UI, wrong default draft, PDF handling
+frontend/src/lib/adapters.ts           — conflict → UI findings (index pairing, global severity)
+frontend/src/lib/api.ts                — API client types
+
+
+================================================================================
+END OF PLANNING DOCUMENT
+================================================================================
