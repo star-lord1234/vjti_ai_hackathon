@@ -22,6 +22,6 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 def chat_message(body: ChatMessageRequest) -> ChatMessageResponse:
     """
     Stateless document-aware chat about the current draft.
-    Uses GROQ_CHAT_API_KEY only — never the shared analysis key pool.
+    Uses an isolated local Ollama client — never the shared analysis LLM pool.
     """
     return handle_chat_message(body)

@@ -3,7 +3,13 @@
     "id": "government_resolution",
     "canonical_en": "Government Resolution",
     "canonical_mr": "शासन निर्णय",
-    "variants": ["GR", "Govt Resolution", "Government Resol.", "शासन निणय", "शासन निर्णयां"],
+    "variants": [
+      "GR",
+      "Govt Resolution",
+      "Government Resol.",
+      "शासन निणय",
+      "शासन निर्णयां"
+    ],
     "context_note": "Use 'शासन निर्णय' in operative text; 'GR' only in internal cross-references"
   },
   {
@@ -17,14 +23,24 @@
     "id": "competent_authority",
     "canonical_en": "competent authority",
     "canonical_mr": "सक्षम प्राधिकरण",
-    "variants": ["competent auth.", "competent officer", "सक्षम अधिकारी", "सक्षम अधिकार"],
+    "variants": [
+      "competent auth.",
+      "competent officer",
+      "सक्षम अधिकारी",
+      "सक्षम अधिकार"
+    ],
     "context_note": "Formal operative clauses must use 'सक्षम प्राधिकरण', not generic 'officer'"
   },
   {
     "id": "administrative_department",
     "canonical_en": "Administrative Department",
     "canonical_mr": "प्रशासकीय विभाग",
-    "variants": ["Admin Dept", "Administrative Dept.", "प्रशासन विभाग", "विभाग"],
+    "variants": [
+      "Admin Dept",
+      "Administrative Dept.",
+      "प्रशासन विभाग",
+      "विभाग"
+    ],
     "context_note": "'विभाग' alone is non-standard when naming the issuing department"
   },
   {
@@ -38,7 +54,12 @@
     "id": "general_administration_department",
     "canonical_en": "General Administration Department",
     "canonical_mr": "सामान्य प्रशासन विभाग",
-    "variants": ["GAD", "Gen. Admin Dept", "सामान्य प्रशासन", "जनरल अॅडमिनिस्ट्रेशन"],
+    "variants": [
+      "GAD",
+      "Gen. Admin Dept",
+      "सामान्य प्रशासन",
+      "जनरल अॅडमिनिस्ट्रेशन"
+    ],
     "context_note": "Full name required on first reference in operative paragraphs"
   },
   {
@@ -66,42 +87,72 @@
     "id": "rural_development_department",
     "canonical_en": "Rural Development Department",
     "canonical_mr": "ग्रामविकास विभाग",
-    "variants": ["RD Dept", "Rural Dev Dept", "ग्रामीण विकास विभाग", "ग्राम विकास"],
+    "variants": [
+      "RD Dept",
+      "Rural Dev Dept",
+      "ग्रामीण विकास विभाग",
+      "ग्राम विकास"
+    ],
     "context_note": "Standard Maharashtra usage is 'ग्रामविकास विभाग' (one word)"
   },
   {
     "id": "urban_development_department",
     "canonical_en": "Urban Development Department",
     "canonical_mr": "नगरविकास विभाग",
-    "variants": ["UDD", "Urban Dev Dept", "नगर विकास विभाग", "अर्बन डेव्हलपमेंट"],
+    "variants": [
+      "UDD",
+      "Urban Dev Dept",
+      "नगर विकास विभाग",
+      "अर्बन डेव्हलपमेंट"
+    ],
     "context_note": null
   },
   {
     "id": "tribal_development_department",
     "canonical_en": "Tribal Development Department",
     "canonical_mr": "आदिवासी विकास विभाग",
-    "variants": ["TDD", "Tribal Dev Dept", "आदिवासी विकास", "ट्रायबल डेव्हलपमेंट"],
+    "variants": [
+      "TDD",
+      "Tribal Dev Dept",
+      "आदिवासी विकास",
+      "ट्रायबल डेव्हलपमेंट"
+    ],
     "context_note": null
   },
   {
     "id": "school_education_department",
     "canonical_en": "School Education and Sports Department",
     "canonical_mr": "शालेय शिक्षण व क्रीडा विभाग",
-    "variants": ["Education Dept", "School Edu Dept", "शिक्षण विभाग", "शालेय शिक्षण विभाग"],
+    "variants": [
+      "Education Dept",
+      "School Edu Dept",
+      "शिक्षण विभाग",
+      "शालेय शिक्षण विभाग"
+    ],
     "context_note": "Post-2018 reorganisation name includes 'क्रीडा'"
   },
   {
     "id": "higher_technical_education",
     "canonical_en": "Higher and Technical Education Department",
     "canonical_mr": "उच्च व तंत्र शिक्षण विभाग",
-    "variants": ["HTE Dept", "Technical Education Dept", "तंत्र शिक्षण विभाग", "उच्च शिक्षण विभाग"],
+    "variants": [
+      "HTE Dept",
+      "Technical Education Dept",
+      "तंत्र शिक्षण विभाग",
+      "उच्च शिक्षण विभाग"
+    ],
     "context_note": "Do not shorten to 'शिक्षण विभाग' when referring to this department"
   },
   {
     "id": "health_department",
     "canonical_en": "Public Health Department",
     "canonical_mr": "सार्वजनिक आरोग्य विभाग",
-    "variants": ["Health Dept", "Medical Dept", "आरोग्य विभाग", "हेल्थ डिपार्टमेंट"],
+    "variants": [
+      "Health Dept",
+      "Medical Dept",
+      "आरोग्य विभाग",
+      "हेल्थ डिपार्टमेंट"
+    ],
     "context_note": "'आरोग्य विभाग' alone is acceptable in repeated references only"
   },
   {
@@ -115,7 +166,12 @@
     "id": "water_resources_department",
     "canonical_en": "Water Resources Department",
     "canonical_mr": "जलसंपदा विभाग",
-    "variants": ["WRD", "Water Resource Dept", "जल संपदा विभाग", "वॉटर रिसोर्सेस"],
+    "variants": [
+      "WRD",
+      "Water Resource Dept",
+      "जल संपदा विभाग",
+      "वॉटर रिसोर्सेस"
+    ],
     "context_note": "'जलसंपदा' is one word in standard usage"
   },
   {
@@ -150,14 +206,24 @@
     "id": "maharashtra_state",
     "canonical_en": "State of Maharashtra",
     "canonical_mr": "महाराष्ट्र राज्य",
-    "variants": ["Maharashtra State", "State Govt of Maharashtra", "महाराष्ट्र शासन राज्य", "महाराष्ट्र स्टेट"],
+    "variants": [
+      "Maharashtra State",
+      "State Govt of Maharashtra",
+      "महाराष्ट्र शासन राज्य",
+      "महाराष्ट्र स्टेट"
+    ],
     "context_note": "Operative text: 'महाराष्ट्र राज्य' or 'महाराष्ट्र शासन'"
   },
   {
     "id": "maharashtra_government",
     "canonical_en": "Government of Maharashtra",
     "canonical_mr": "महाराष्ट्र शासन",
-    "variants": ["Maharashtra Govt", "GoM", "महाराष्ट्र सरकार", "महाराष्ट्र गव्हर्नमेंट"],
+    "variants": [
+      "Maharashtra Govt",
+      "GoM",
+      "महाराष्ट्र सरकार",
+      "महाराष्ट्र गव्हर्नमेंट"
+    ],
     "context_note": "Never 'सरकार' in formal GR operative clauses — use 'शासन'"
   },
   {
@@ -171,7 +237,12 @@
     "id": "cabinet_decision",
     "canonical_en": "Cabinet decision",
     "canonical_mr": "मंत्रिमंडळ निर्णय",
-    "variants": ["Cabinet Decision", "Cabinet approval", "मंत्रिमंडळाचा निर्णय", "कॅबिनेट डिसिशन"],
+    "variants": [
+      "Cabinet Decision",
+      "Cabinet approval",
+      "मंत्रिमंडळाचा निर्णय",
+      "कॅबिनेट डिसिशन"
+    ],
     "context_note": null
   },
   {
@@ -192,7 +263,12 @@
     "id": "principal_secretary",
     "canonical_en": "Principal Secretary",
     "canonical_mr": "प्रधान सचिव",
-    "variants": ["Pr. Secretary", "Principal Secy", "प्रधान सचिवांनी", "प्रिन्सिपल सेक्रेटरी"],
+    "variants": [
+      "Pr. Secretary",
+      "Principal Secy",
+      "प्रधान सचिवांनी",
+      "प्रिन्सिपल सेक्रेटरी"
+    ],
     "context_note": null
   },
   {
@@ -213,7 +289,12 @@
     "id": "divisional_commissioner",
     "canonical_en": "Divisional Commissioner",
     "canonical_mr": "विभागीय आयुक्त",
-    "variants": ["Div. Commissioner", "Commissioner", "आयुक्त", "डिव्हिजनल कमिश्नर"],
+    "variants": [
+      "Div. Commissioner",
+      "Commissioner",
+      "आयुक्त",
+      "डिव्हिजनल कमिश्नर"
+    ],
     "context_note": "Bare 'आयुक्त' is ambiguous — specify division when context requires"
   },
   {
@@ -248,7 +329,12 @@
     "id": "municipal_corporation",
     "canonical_en": "Municipal Corporation",
     "canonical_mr": "महानगरपालिका",
-    "variants": ["Muni. Corp", "Corporation", "महानगर पालिका", "म्युनिसिपल कॉर्पोरेशन"],
+    "variants": [
+      "Muni. Corp",
+      "Corporation",
+      "महानगर पालिका",
+      "म्युनिसिपल कॉर्पोरेशन"
+    ],
     "context_note": "'महानगरपालिका' is one word"
   },
   {
@@ -276,7 +362,12 @@
     "id": "economically_weaker_section",
     "canonical_en": "Economically Weaker Section",
     "canonical_mr": "आर्थिकदृष्ट्या दुर्बल घटक",
-    "variants": ["EWS", "Economically Weak Section", "आर्थिक दुर्बल घटक", "ईडब्ल्यूएस"],
+    "variants": [
+      "EWS",
+      "Economically Weak Section",
+      "आर्थिक दुर्बल घटक",
+      "ईडब्ल्यूएस"
+    ],
     "context_note": null
   },
   {
@@ -311,14 +402,24 @@
     "id": "budget_grant",
     "canonical_en": "budget grant",
     "canonical_mr": "अर्थसंकल्पीय तरतूद",
-    "variants": ["budgetary grant", "budget provision", "बजेट ग्रँट", "अर्थसंकल्प तरतूद"],
+    "variants": [
+      "budgetary grant",
+      "budget provision",
+      "बजेट ग्रँट",
+      "अर्थसंकल्प तरतूद"
+    ],
     "context_note": "Finance concurrence paragraphs require 'अर्थसंकल्पीय तरतूद'"
   },
   {
     "id": "reappropriation",
     "canonical_en": "reappropriation",
     "canonical_mr": "पुनर्विनियोग",
-    "variants": ["re-appropriation", "re appropriation", "पुनर विनियोग", "रीअप्रोप्रिएशन"],
+    "variants": [
+      "re-appropriation",
+      "re appropriation",
+      "पुनर विनियोग",
+      "रीअप्रोप्रिएशन"
+    ],
     "context_note": "'पुनर्विनियोग' is one word"
   },
   {
@@ -332,7 +433,12 @@
     "id": "hereby_sanctioned",
     "canonical_en": "is hereby sanctioned",
     "canonical_mr": "यान्वये मंजूर करण्यात येत आहे",
-    "variants": ["hereby approved", "is sanctioned", "यान्वये मंजूर", "मंजूर केले जाते"],
+    "variants": [
+      "hereby approved",
+      "is sanctioned",
+      "यान्वये मंजूर",
+      "मंजूर केले जाते"
+    ],
     "context_note": "Standard operative closing formula for financial GRs"
   },
   {
@@ -346,7 +452,12 @@
     "id": "notwithstanding",
     "canonical_en": "notwithstanding",
     "canonical_mr": "वगळता",
-    "variants": ["not withstanding", "not-withstanding", "नॉटविथस्टँडिंग", "वगळून"],
+    "variants": [
+      "not withstanding",
+      "not-withstanding",
+      "नॉटविथस्टँडिंग",
+      "वगळून"
+    ],
     "context_note": "'वगळता' is preferred in supersession clauses"
   },
   {
@@ -360,7 +471,12 @@
     "id": "with_immediate_effect",
     "canonical_en": "with immediate effect",
     "canonical_mr": "तात्काळ अंमलबजावणीसाठी",
-    "variants": ["w.e.f. immediately", "immediate effect", "तातडीने", "विथ इमिजिएट इफेक्ट"],
+    "variants": [
+      "w.e.f. immediately",
+      "immediate effect",
+      "तातडीने",
+      "विथ इमिजिएट इफेक्ट"
+    ],
     "context_note": "Standard temporal operative phrase"
   },
   {
@@ -369,5 +485,129 @@
     "canonical_mr": "दिनांक ... पासून अंमलबजावणीसाठी",
     "variants": ["w.e.f.", "effective from", "पासून लागू", "विथ इफेक्ट फ्रॉम"],
     "context_note": "Date must accompany this phrase in operative text"
+  },
+  {
+    "id": "scholarship",
+    "canonical_en": "scholarship",
+    "canonical_mr": "शिष्यवृत्ती",
+    "variants": [
+      "scholarship scheme",
+      "stipend",
+      "शिष्यवृत्ती योजना",
+      "स्टाइपेंड"
+    ],
+    "context_note": "Use 'शिष्यवृत्ती' in operative text for educational assistance"
+  },
+  {
+    "id": "fee_reimbursement",
+    "canonical_en": "fee reimbursement",
+    "canonical_mr": "शुल्क परतावा",
+    "variants": [
+      "fee refund",
+      "tuition reimbursement",
+      "शुल्क लाभ",
+      "फीस रिबर्समेंट"
+    ],
+    "context_note": "Prefer 'शुल्क परतावा' for reimbursement based grant provisions"
+  },
+  {
+    "id": "beneficiary",
+    "canonical_en": "beneficiary",
+    "canonical_mr": "लाभार्थी",
+    "variants": ["beneficiaries", "recipient", "लाभार्थ्यांना", "बिनाफायदी"],
+    "context_note": "Formal operative text must use 'लाभार्थी'"
+  },
+  {
+    "id": "institution",
+    "canonical_en": "institution",
+    "canonical_mr": "संस्था",
+    "variants": [
+      "institutional",
+      "college",
+      "school",
+      "संस्थे",
+      "इन्स्टिट्यूशन"
+    ],
+    "context_note": "Use 'संस्था' for the governing body or entity, not generic 'school' in formal drafting"
+  },
+  {
+    "id": "director",
+    "canonical_en": "Director",
+    "canonical_mr": "निदेशक",
+    "variants": ["Directorate", "Dy. Director", "निदेशालय", "डायरेक्टर"],
+    "context_note": "Reserve 'निदेशक' for the officer, not just the office"
+  },
+  {
+    "id": "office_order",
+    "canonical_en": "Office order",
+    "canonical_mr": "कार्यालयीन आदेश",
+    "variants": ["office memorandum", "order", "कार्यालय आदेश", "ऑफिस ऑर्डर"],
+    "context_note": "Operational instructions are usually 'कार्यालयीन आदेश'"
+  },
+  {
+    "id": "committee",
+    "canonical_en": "committee",
+    "canonical_mr": "समिती",
+    "variants": ["committee constituted", "panel", "समितीकृती", "कमिटी"],
+    "context_note": "Use 'समिती' in formal government drafting"
+  },
+  {
+    "id": "nodal_officer",
+    "canonical_en": "Nodal Officer",
+    "canonical_mr": "नोडल अधिकारी",
+    "variants": [
+      "nodal authority",
+      "focal person",
+      "नोडल अधिकाऱ्याने",
+      "नोडल ऑफिसर"
+    ],
+    "context_note": "Use 'नोडल अधिकारी' for responsible implementation contact"
+  },
+  {
+    "id": "annual_report",
+    "canonical_en": "Annual Report",
+    "canonical_mr": "वार्षिक अहवाल",
+    "variants": [
+      "yearly report",
+      "annual review",
+      "वार्षिक स्वरुपाचा अहवाल",
+      "अॅन्युअल रिपोर्ट"
+    ],
+    "context_note": null
+  },
+  {
+    "id": "provision",
+    "canonical_en": "provision",
+    "canonical_mr": "तरतूद",
+    "variants": ["clause", "stipulation", "तरतुद", "प्रॉव्हिजन"],
+    "context_note": "Government drafting often prefers 'तरतूद' for formal authorizations"
+  },
+  {
+    "id": "reimbursement",
+    "canonical_en": "reimbursement",
+    "canonical_mr": "परतावा",
+    "variants": ["refund", "repayment", "परतफेड", "रिबर्समेंट"],
+    "context_note": null
+  },
+  {
+    "id": "approval",
+    "canonical_en": "approval",
+    "canonical_mr": "मंजूरी",
+    "variants": ["sanction", "authorisation", "मंजूर", "अप्रूव्हल"],
+    "context_note": "In formal GRs, 'मंजूरी' is preferred for decisions"
+  },
+  {
+    "id": "certificate",
+    "canonical_en": "certificate",
+    "canonical_mr": "प्रमाणपत्र",
+    "variants": ["certification", "document", "प्रमाणपत्रक", "सर्टिफिकेट"],
+    "context_note": null
+  },
+  {
+    "id": "eligibility",
+    "canonical_en": "eligibility",
+    "canonical_mr": "अर्हता",
+    "variants": ["eligible", "entitlement", "अर्हताधारक", "एलिजिबिलिटी"],
+    "context_note": "Formal drafting uses 'अर्हता' for qualification standards"
   }
 ]

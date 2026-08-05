@@ -1,6 +1,6 @@
 """
 Bilingual terminology consistency checker — separate LLM prompt/module from conflict detection.
-Uses the shared Groq APIManager; fails fast when all keys are on cooldown.
+Uses the shared local Ollama client manager; fails fast when the client is on cooldown.
 """
 
 from __future__ import annotations
@@ -19,22 +19,24 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from reasoning.glossary.exceptions import GlossaryCheckUnavailable
-from reasoning.glossary.loader import get_glossary_for_prompt
-from reasoning.glossary.models import GlossaryCheckSection, GlossaryLLMOutput
-from reasoning.llm_reasoner import get_api_manager
+from reasoning.glossary.loader import get_glossary_for_prompt, GLOSSARY_ENTRIES
+from reasoning.glossary.models import GlossaryCheckSection, GlossaryFinding, GlossaryLLMOutput
+from reasoning.llm_reasoner import get_llm_manager
 from reasoning.prompt_utils import (
-    GROQ_MAX_INPUT_TOKENS,
+    LLM_MAX_INPUT_TOKENS,
     REASONING_TEMPERATURE,
     chars_for_token_budget,
     estimate_tokens,
     fit_prompt_pair,
     summarize_draft_for_prompt,
 )
-from scripts.api_manager import APIManager
+from llm.manager import LLMClientManager
 
 logger = logging.getLogger(__name__)
 
-GLOSSARY_MODEL = os.getenv("GLOSSARY_MODEL", os.getenv("REASONING_MODEL", "llama-3.3-70b-versatile"))
+from llm.config import default_reasoning_model
+
+GLOSSARY_MODEL = os.getenv("GLOSSARY_MODEL", default_reasoning_model())
 GLOSSARY_MAX_DRAFT_CHARS = int(os.getenv("GLOSSARY_MAX_DRAFT_CHARS", "6000"))
 GLOSSARY_MAX_RETRIES = int(os.getenv("GLOSSARY_MAX_RETRIES", "1"))
 GLOSSARY_MAX_TOKENS = int(os.getenv("GLOSSARY_MAX_TOKENS", "1536"))
@@ -43,6 +45,73 @@ GLOSSARY_OUTPUT_SCHEMA = (
     '{"findings":[{"text_found":str,"context_snippet":str,'
     '"canonical_term":str,"reason":str,"confidence":float}]}'
 )
+
+# Minimum token overlap ratio for a finding to be considered a real glossary hit
+_MIN_GLOSSARY_OVERLAP = 0.5
+
+
+def _normalize_term(t: str) -> str:
+    """Lowercase, strip punctuation for robust comparison."""
+    import re
+    return re.sub(r"[^\w\u0900-\u097F]", "", t.lower()).strip()
+
+
+def _is_glossary_term(text: str) -> bool:
+    """
+    Return True if 'text' matches any glossary entry's canonical or variant,
+    using exact normalized match OR token overlap >= _MIN_GLOSSARY_OVERLAP.
+    """
+    norm_text = _normalize_term(text)
+    if not norm_text:
+        return False
+    for entry in GLOSSARY_ENTRIES:
+        candidates = list(entry.variants)
+        if entry.canonical_en:
+            candidates.append(entry.canonical_en)
+        if entry.canonical_mr:
+            candidates.append(entry.canonical_mr)
+        for cand in candidates:
+            norm_cand = _normalize_term(cand)
+            if norm_cand and (norm_text == norm_cand or norm_text in norm_cand or norm_cand in norm_text):
+                return True
+    return False
+
+
+def _postfilter_glossary_findings(findings: list) -> list:
+    """
+    Deterministically filter LLM glossary output:
+    1. Drop findings where text_found already equals canonical_term (already correct usage).
+    2. Drop findings where text_found doesn't match any known glossary entry variant.
+    3. Deduplicate by (text_found, canonical_term), keeping highest confidence.
+    """
+    filtered: list = []
+    seen: dict = {}  # (text_found_norm, canonical_norm) -> best finding
+
+    for f in findings:
+        norm_found = _normalize_term(f.text_found)
+        norm_canonical = _normalize_term(f.canonical_term)
+
+        # Rule 1: Drop if text_found is already the canonical form
+        if norm_found == norm_canonical:
+            logger.debug(
+                "Glossary post-filter: dropping '%s' (already canonical)", f.text_found
+            )
+            continue
+
+        # Rule 2: Drop if text_found is not a known glossary entry at all
+        if not _is_glossary_term(f.text_found) and not _is_glossary_term(f.canonical_term):
+            logger.debug(
+                "Glossary post-filter: dropping '%s' (not a glossary entry)", f.text_found
+            )
+            continue
+
+        # Rule 3: Deduplicate — keep highest confidence per (text_found, canonical) pair
+        key = (norm_found, norm_canonical)
+        existing = seen.get(key)
+        if existing is None or f.confidence > existing.confidence:
+            seen[key] = f
+
+    return list(seen.values())
 
 _SYSTEM_PROMPT = """You are a Maharashtra Government Resolution (GR) terminology reviewer.
 
@@ -75,11 +144,11 @@ def _clean_json_text(text: str) -> str:
     return cleaned.strip()
 
 
-def _require_available_client(api_mgr: APIManager) -> tuple[int, object]:
-    """Fail fast when no Groq key is usable — do not block waiting for cooldown."""
+def _require_available_client(api_mgr: LLMClientManager) -> tuple[int, object]:
+    """Fail fast when the LLM client is cooling down."""
     idx, client = api_mgr.get_client()
     if client is None:
-        raise GlossaryCheckUnavailable("api_quota_exhausted")
+        raise GlossaryCheckUnavailable("llm_unavailable")
     return idx, client
 
 
@@ -90,8 +159,8 @@ def _call_glossary_llm_json(
     *,
     max_retries: int = GLOSSARY_MAX_RETRIES,
 ) -> T:
-    api_mgr = get_api_manager()
-    char_budget = chars_for_token_budget(GROQ_MAX_INPUT_TOKENS)
+    api_mgr = get_llm_manager()
+    char_budget = chars_for_token_budget(LLM_MAX_INPUT_TOKENS)
     schema_hint = GLOSSARY_OUTPUT_SCHEMA
     last_exception: Optional[Exception] = None
 
@@ -167,7 +236,7 @@ def _call_glossary_llm_json(
             break
 
     raise RuntimeError(
-        f"Failed to generate valid {model_cls.__name__} from Groq: {last_exception}"
+        f"Failed to generate valid {model_cls.__name__} from LLM: {last_exception}"
     ) from last_exception
 
 
@@ -206,10 +275,16 @@ def run_glossary_check(draft_text: str) -> GlossaryCheckSection:
             user_prompt,
             GlossaryLLMOutput,
         )
-        return GlossaryCheckSection(status="ok", findings=output.findings)
+        filtered = _postfilter_glossary_findings(output.findings)
+        logger.info(
+            "Glossary post-filter: %s findings in, %s findings out.",
+            len(output.findings),
+            len(filtered),
+        )
+        return GlossaryCheckSection(status="ok", findings=filtered)
     except GlossaryCheckUnavailable as exc:
         logger.warning(
-            "Glossary terminology check unavailable: %s (all Groq API keys on cooldown)",
+            "Glossary terminology check unavailable: %s (LLM client on cooldown)",
             exc.reason,
         )
         return GlossaryCheckSection(status="unavailable", reason=exc.reason)

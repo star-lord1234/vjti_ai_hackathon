@@ -247,6 +247,8 @@ def build_context_block(
             "id": doc_id,
             "filename": res.get("filename"),
             "gr_number_canonical": res.get("gr_number_canonical"),
+            "gr_number_original": res.get("gr_number_original"),
+            "gr_number_normalized": res.get("gr_number_normalized"),
             "department": res.get("department"),
             "gr_date": str(res.get("gr_date")) if res.get("gr_date") else None,
             "subject_mr": res.get("subject_mr"),

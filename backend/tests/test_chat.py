@@ -53,4 +53,4 @@ def test_unavailable_on_rate_limit():
             )
 
     assert result.status == "unavailable"
-    assert result.reason == "api_quota_exhausted"
+    assert result.reason == "llm_unavailable"

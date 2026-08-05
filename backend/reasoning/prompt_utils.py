@@ -13,12 +13,12 @@ from reasoning.models import ConflictFinding, ConflictPair, QueryAnswer, Support
 
 T = TypeVar("T")
 
-# Groq on-demand tier ≈12k TPM per request — budget input conservatively for Marathi OCR.
-GROQ_MAX_INPUT_TOKENS = int(os.getenv("GROQ_MAX_INPUT_TOKENS", "9000"))
+# Budget input conservatively for Marathi OCR (local Ollama context window).
+LLM_MAX_INPUT_TOKENS = int(os.getenv("LLM_MAX_INPUT_TOKENS", "9000"))
 # Devanagari / mixed Marathi-English tokenizes denser than ~4 chars/token.
 CHARS_PER_TOKEN = float(os.getenv("REASONING_CHARS_PER_TOKEN", "2.2"))
 
-_default_prompt_chars = int(GROQ_MAX_INPUT_TOKENS * CHARS_PER_TOKEN)
+_default_prompt_chars = int(LLM_MAX_INPUT_TOKENS * CHARS_PER_TOKEN)
 MAX_PROMPT_CHARS = int(os.getenv("REASONING_MAX_PROMPT_CHARS", str(_default_prompt_chars)))
 MAX_DRAFT_CHARS = int(os.getenv("REASONING_MAX_DRAFT_CHARS", "2500"))
 CONFLICT_DRAFT_CHARS = int(os.getenv("CONFLICT_MAX_DRAFT_CHARS", "2000"))
@@ -152,7 +152,7 @@ def fit_prompt_pair(
     max_total_chars: Optional[int] = None,
 ) -> Tuple[str, str, bool]:
     """
-    Ensure system + user prompts fit within char budget (derived from GROQ_MAX_INPUT_TOKENS).
+    Ensure system + user prompts fit within char budget (derived from LLM_MAX_INPUT_TOKENS).
     Truncates user_prompt from the middle if needed.
     Returns (system, user, was_truncated).
     """
@@ -169,7 +169,7 @@ def fit_prompt_pair(
     tail = max(400, user_budget - head - 50)
     trimmed = (
         user_prompt[:head].rstrip()
-        + "\n\n[... prompt truncated to fit Groq token limit ...]\n\n"
+        + "\n\n[... prompt truncated to fit model context limit ...]\n\n"
         + user_prompt[-tail:].lstrip()
     )
     est = estimate_tokens(system_prompt + trimmed)
@@ -274,12 +274,96 @@ def _find_gr_for_clause(
     return best or affected_grs[0]
 
 
+def _infer_conflict_type(draft_clause: str, corpus_excerpt: str) -> str:
+    """
+    Infer a high-level conflict type from surface-level cues.
+    Returns one of: 'override', 'overlap', 'inconsistency'.
+    """
+    amounts_draft = _AMOUNT_TOKEN.findall(draft_clause)
+    amounts_corpus = _AMOUNT_TOKEN.findall(corpus_excerpt)
+    if amounts_draft and amounts_corpus and amounts_draft != amounts_corpus:
+        return "override"  # Numeric amounts differ — new value overrides existing
+    overlap = _overlap_score(draft_clause, corpus_excerpt)
+    if overlap > 0.5:
+        return "overlap"  # High text overlap — duplicate / redundant provision
+    return "inconsistency"  # General policy inconsistency
+
+
+def _build_per_pair_recommendation(
+    draft_clause: str,
+    gr_label: str,
+    conflict_type: str,
+    relevance_note: Optional[str],
+) -> str:
+    """
+    Generate a specific, actionable recommendation for a conflict pair.
+    Tailors guidance to the actual clause topic and conflict type instead of using one repeated generic message.
+    """
+    clause_text = (draft_clause or "").strip()
+    note = (relevance_note or "").strip()
+    clause_lc = clause_text.lower()
+
+    if not note and len(clause_text) < 10:
+        return f"Insufficient evidence — review {gr_label} for conflicting provisions before drafting."
+
+    if "scholarship" in clause_lc or "stipend" in clause_lc or "fee" in clause_lc:
+        if conflict_type == "override":
+            return (
+                f"Reduce or justify the scholarship/fee amount in the draft to match {gr_label}; "
+                "obtain departmental concurrence if the grant exceeds the approved ceiling."
+            )
+        return (
+            f"Align the scholarship/fee language with {gr_label} and confirm the eligibility or payment basis before issuing the order."
+        )
+
+    if "authority" in clause_lc or "approval" in clause_lc or "sanction" in clause_lc:
+        return (
+            f"Clarify the approving authority and keep the draft consistent with {gr_label}; "
+            "the decision must be routed through the competent authority shown in the cited GR."
+        )
+
+    if "department" in clause_lc or "division" in clause_lc or "jurisdiction" in clause_lc:
+        return (
+            f"Confirm the jurisdictional department and revise the draft to match the operative scope defined in {gr_label}."
+        )
+
+    if "date" in clause_lc or "effective" in clause_lc or "with effect" in clause_lc:
+        return (
+            f"Correct the operative date/effective clause to align with the implementation timeline in {gr_label}."
+        )
+
+    if conflict_type == "override":
+        return (
+            f"The draft changes the amount, limit, or operative outcome set out in {gr_label}. "
+            "Obtain concurrence or cite a superseding authority before finalising the order."
+        )
+    if conflict_type == "overlap":
+        return (
+            f"The draft duplicates or partially overlaps {gr_label}. "
+            "Consolidate the language into one operative provision or explicitly supersede the older text."
+        )
+    if note:
+        return (
+            f"Recast the clause to match {gr_label} and the stated basis in the cited GR: {note}. "
+            "Add the required legal or administrative basis before approval."
+        )
+    return (
+        f"Reconcile the drafting with {gr_label} and state the governing authority, date, or eligibility condition before signing off."
+    )
+
+
 def build_conflict_pairs(
     finding: ConflictFinding,
     label_map: Dict[str, Dict[str, Any]],
 ) -> List[ConflictPair]:
-    """Pair each conflicting draft clause with corpus-side language."""
+    """Pair each conflicting draft clause with corpus-side language.
+
+    Deduplicates: if two clauses map to the same GR label AND share the same
+    corpus_excerpt, only the first pair is kept.
+    Each pair gets its own structured English explanation, conflict type, and recommendation.
+    """
     pairs: List[ConflictPair] = []
+    seen: set[tuple[str, str]] = set()  # (draft_clause_norm, gr_label)
     clauses = finding.conflicting_clauses or []
     grs = finding.affected_grs or []
 
@@ -287,6 +371,11 @@ def build_conflict_pairs(
         gr = _find_gr_for_clause(clause, grs)
         if not gr:
             continue
+
+        dedup_key = (clause.strip()[:120], gr.label)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
 
         meta = label_map.get(gr.label, {})
         corpus = (gr.corpus_excerpt or "").strip()
@@ -300,13 +389,45 @@ def build_conflict_pairs(
         if not corpus and gr.relevance_note:
             corpus = gr.relevance_note
 
+        # Pull official GR number — prefer original, then normalized, then canonical
+        gr_num_original = gr.gr_number_original or meta.get("gr_number_original")
+        gr_num_normalized = gr.gr_number_normalized or meta.get("gr_number_normalized")
+        gr_num_canonical = gr.gr_number_canonical or meta.get("gr_number_canonical")
+
+        conflict_type = _infer_conflict_type(clause, corpus)
+
+        # Per-conflict English explanation sourced from relevance_note, not global explanation
+        note = (gr.relevance_note or "").strip()
+        if note:
+            per_conflict_explanation = note
+        elif corpus:
+            per_conflict_explanation = (
+                f"The draft clause conflicts with {gr.label}: "
+                + (gr_num_original or gr_num_normalized or gr_num_canonical or gr.label)
+                + f". Conflict type: {conflict_type}."
+            )
+        else:
+            per_conflict_explanation = (
+                f"Potential {conflict_type} conflict with {gr.label} detected. "
+                "Insufficient corpus evidence to provide a detailed explanation."
+            )
+
+        recommendation = _build_per_pair_recommendation(clause, gr.label, conflict_type, note)
+
         pairs.append(
             ConflictPair(
                 draft_clause=clause,
                 corpus_excerpt=corpus,
                 gr_label=gr.label,
-                gr_number_canonical=gr.gr_number_canonical or meta.get("gr_number_canonical"),
+                gr_number_canonical=gr_num_canonical,
+                gr_number_original=gr_num_original,
+                gr_number_normalized=gr_num_normalized,
                 relevance_note=gr.relevance_note,
+                per_conflict_explanation=per_conflict_explanation,
+                draft_proposes=clause,
+                existing_gr_provides=corpus,
+                conflict_type=conflict_type,
+                recommendation=recommendation,
             )
         )
 
@@ -319,6 +440,7 @@ def validate_supporting_grs(
 ) -> List[SupportingGR]:
     """
     Drop or relabel GR citations that were not present in retrieved context.
+    Also enriches each SupportingGR with gr_number_original/normalized from label_map.
     """
     if not grs:
         return []
@@ -359,6 +481,8 @@ def validate_supporting_grs(
             SupportingGR(
                 label=resolved_label,
                 gr_number_canonical=canon or meta.get("gr_number_canonical"),
+                gr_number_original=gr.gr_number_original or meta.get("gr_number_original"),
+                gr_number_normalized=gr.gr_number_normalized or meta.get("gr_number_normalized"),
                 relevance_note=gr.relevance_note,
                 corpus_excerpt=gr.corpus_excerpt,
             )

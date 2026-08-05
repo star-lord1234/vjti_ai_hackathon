@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from groq import RateLimitError, APIConnectionError, APITimeoutError
+from openai import APIConnectionError, APITimeoutError, RateLimitError
 from tqdm import tqdm
 from pydantic import ValidationError
 
@@ -21,8 +21,10 @@ from parser.normalize import normalize_gr_number
 from parser.paths import resolve_text_folder
 from parser.rule_extractor import rule_extract, get_missing_fields, CORE_FIELDS
 
+from llm.config import default_ingest_model
+
 # Fast model for residual LLM fills
-MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+MODEL = default_ingest_model()
 
 # Phase 1: pure regex — very high parallelism (no API)
 RULE_WORKERS = int(os.getenv("RULE_WORKERS", str(max(16, (os.cpu_count() or 4) * 4))))
@@ -43,15 +45,16 @@ ERROR_LOG = ROOT / "failed_metadata.txt"
 _error_lock = threading.Lock()
 _tpd_block_event = threading.Event()
 
-# Lazy — rule phase must not wait on Groq client init
+# Lazy — rule phase must not wait on LLM client init
 _api_manager = None
 
 
 def get_api_manager():
     global _api_manager
     if _api_manager is None:
-        from api_manager import APIManager
-        _api_manager = APIManager()
+        from llm.manager import LLMClientManager
+
+        _api_manager = LLMClientManager()
     return _api_manager
 
 
@@ -257,7 +260,7 @@ def save_metadata(metadata: GRMetadata):
 
 
 def parse_duration(text: str) -> float:
-    """Parse Groq durations like 1m19.488s, 2m7.872s, 19.5s, 500ms."""
+    """Parse retry-after durations like 1m19.488s, 2m7.872s, 19.5s, 500ms."""
 
     total = 0.0
     parts = re.findall(r"([0-9]+(?:\.[0-9]+)?)(ms|h|m|s)", text, re.IGNORECASE)

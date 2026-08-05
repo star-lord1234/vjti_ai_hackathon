@@ -56,7 +56,10 @@ import {
   MAHARASHTRA_SAMPLE_FILENAME,
 } from "../lib/sampleDraft";
 import { extractTextFromPdf, isPdfFile } from "../lib/pdf";
-import { GR_TEMPLATE_RULES, GR_TEMPLATE_SCORING_NOTE } from "../lib/grTemplateRules";
+import {
+  GR_TEMPLATE_RULES,
+  GR_TEMPLATE_SCORING_NOTE,
+} from "../lib/grTemplateRules";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -198,6 +201,28 @@ function SeverityBadge({
   );
 }
 
+function looksLikeCanonicalGrNumber(value?: string | null): boolean {
+  if (!value) return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  return !/[\/\-]/.test(trimmed) && !/[A-Za-z]/.test(trimmed);
+}
+
+function getDisplayGrReference(finding: Finding) {
+  const explicitNumber = finding.corpusGrNumber?.trim();
+  const fallbackLabel = finding.corpusGrLabel?.trim();
+
+  if (!explicitNumber) {
+    return { number: undefined, label: fallbackLabel || undefined };
+  }
+
+  if (looksLikeCanonicalGrNumber(explicitNumber)) {
+    return { number: undefined, label: fallbackLabel || explicitNumber };
+  }
+
+  return { number: explicitNumber, label: fallbackLabel || undefined };
+}
+
 // ─── Toast ────────────────────────────────────────────────────────────────────
 
 function Toast({ message, onDone }: { message: string; onDone: () => void }) {
@@ -229,6 +254,8 @@ function FindingCard({
   onBookmark: (e: React.MouseEvent) => void;
 }) {
   const cfg = severityConfig(finding.severity);
+  const displayGr = getDisplayGrReference(finding);
+
   return (
     <button
       onClick={onClick}
@@ -268,9 +295,31 @@ function FindingCard({
 
         {finding.corpusExcerpt && (
           <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-800 mb-1">
-              Existing GR{finding.corpusGrLabel ? ` · ${finding.corpusGrLabel}` : ""}
-            </p>
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                Existing GR
+              </p>
+              {displayGr.number ? (
+                <span
+                  className="text-[9px] font-mono text-amber-700 bg-amber-100 px-2 py-0.5 rounded-md border border-amber-200 max-w-[170px] truncate"
+                  title={displayGr.number}
+                >
+                  {displayGr.number}
+                </span>
+              ) : displayGr.label ? (
+                <span
+                  className="text-[9px] text-amber-700 bg-amber-100 px-2 py-0.5 rounded-md border border-amber-200 max-w-[170px] truncate"
+                  title={displayGr.label}
+                >
+                  {displayGr.label}
+                </span>
+              ) : null}
+            </div>
+            {finding.corpusGrLabel && displayGr.number && (
+              <p className="text-[10px] text-amber-600 mb-1">
+                {finding.corpusGrLabel}
+              </p>
+            )}
             <p className="text-xs text-amber-950 leading-relaxed line-clamp-2">
               {finding.corpusExcerpt}
             </p>
@@ -320,14 +369,24 @@ function InspectorDrawer({
 }) {
   const cfg = finding ? severityConfig(finding.severity) : null;
   const Icon = cfg?.icon ?? Info;
+  const displayGr = finding
+    ? getDisplayGrReference(finding)
+    : { number: undefined, label: undefined };
+  const conflictTypeLabel = finding?.conflictType
+    ? finding.conflictType.charAt(0).toUpperCase() +
+      finding.conflictType.slice(1)
+    : undefined;
 
   return (
     <>
       <div
-        className={`fixed inset-0 z-40 transition-opacity duration-300 pointer-events-none ${
-          finding ? "opacity-100" : "opacity-0"
+        className={`fixed inset-0 z-40 transition-opacity duration-300 ${
+          finding
+            ? "opacity-100 pointer-events-auto"
+            : "opacity-0 pointer-events-none"
         }`}
-        onClick={onClose}
+        style={{ background: "transparent" }}
+        onClick={finding ? onClose : undefined}
       />
       <div
         className={`fixed top-0 right-0 h-full w-[460px] z-50 bg-white border-l border-[#E5E7EB] shadow-2xl flex flex-col transition-transform duration-300 ease-in-out ${
@@ -341,11 +400,16 @@ function InspectorDrawer({
 
             <div className="flex items-start justify-between px-6 py-5 border-b border-[#E5E7EB]">
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center gap-2 mb-2 flex-wrap">
                   <SeverityBadge severity={finding.severity} size="md" />
                   <span className="text-xs text-[#9CA3AF] font-mono bg-[#F9FAFB] px-2 py-0.5 rounded-md border border-[#E5E7EB]">
                     {finding.clauseNumber}
                   </span>
+                  {conflictTypeLabel && (
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-[#475569] bg-slate-100 px-2 py-1 rounded-full border border-slate-200">
+                      {conflictTypeLabel}
+                    </span>
+                  )}
                 </div>
                 <h2 className="text-sm font-semibold text-[#111827] leading-snug pr-2">
                   {finding.summary}
@@ -421,7 +485,7 @@ function InspectorDrawer({
                     {finding.draftExcerpt && (
                       <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
                         <p className="text-[10px] font-semibold uppercase tracking-wide text-red-700 mb-2">
-                          Draft GR says
+                          Draft proposes
                         </p>
                         <p className="text-sm text-red-950 leading-relaxed">
                           {finding.draftExcerpt}
@@ -430,13 +494,31 @@ function InspectorDrawer({
                     )}
                     {finding.corpusExcerpt && (
                       <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-                        <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-800 mb-2">
-                          Existing GR says
-                          {finding.corpusGrLabel ? ` (${finding.corpusGrLabel})` : ""}
-                          {finding.corpusGrNumber
-                            ? ` · ${finding.corpusGrNumber}`
-                            : ""}
-                        </p>
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                            Existing GR provides
+                          </p>
+                          {displayGr.number ? (
+                            <span
+                              className="text-[10px] font-mono text-amber-700 bg-amber-100 px-2 py-0.5 rounded-md border border-amber-200 max-w-[180px] truncate"
+                              title={displayGr.number}
+                            >
+                              {displayGr.number}
+                            </span>
+                          ) : displayGr.label ? (
+                            <span
+                              className="text-[10px] text-amber-700 bg-amber-100 px-2 py-0.5 rounded-md border border-amber-200 max-w-[180px] truncate"
+                              title={displayGr.label}
+                            >
+                              {displayGr.label}
+                            </span>
+                          ) : null}
+                        </div>
+                        {finding.corpusGrLabel && displayGr.number && (
+                          <p className="text-[10px] text-amber-600 mb-1.5">
+                            {finding.corpusGrLabel}
+                          </p>
+                        )}
                         <p className="text-sm text-amber-950 leading-relaxed">
                           {finding.corpusExcerpt}
                         </p>
@@ -656,7 +738,20 @@ function highlightMarkClass(severity?: Severity): string {
   }
 }
 
-function highlightBlockClass(severity?: Severity): string {
+function highlightBlockClass(severity?: Severity, fuzzy?: boolean): string {
+  // Fuzzy matches: only a subtle left border — no background fill that masks the draft
+  if (fuzzy) {
+    switch (severity) {
+      case "high":
+        return "border-l-4 border-red-400 pl-3 transition-all duration-300";
+      case "medium":
+        return "border-l-4 border-amber-400 pl-3 transition-all duration-300";
+      case "low":
+      default:
+        return "border-l-4 border-blue-400 pl-3 transition-all duration-300";
+    }
+  }
+  // Exact matches: full block highlight
   switch (severity) {
     case "high":
       return "bg-red-50/80 outline outline-2 outline-red-400/70 rounded-xl p-3 -m-3 transition-all duration-300 shadow-sm";
@@ -730,9 +825,7 @@ function DocumentViewer({
   const snippet =
     highlightedFinding?.matched_text || highlightedFinding?.matchedText || "";
 
-  const match = snippet
-    ? findHighlightMatch(textsForMatch, snippet)
-    : null;
+  const match = snippet ? findHighlightMatch(textsForMatch, snippet) : null;
 
   // Scroll matched paragraph into view when the selected finding or scrollTarget changes
   useEffect(() => {
@@ -748,7 +841,7 @@ function DocumentViewer({
 
   return (
     <div
-      className="flex-1 overflow-y-auto bg-[#525659] flex justify-center py-8 px-6"
+      className="flex-1 overflow-y-auto bg-transparent flex justify-center py-8 px-6"
       style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}
     >
       <div
@@ -773,7 +866,10 @@ function DocumentViewer({
                   ref={isHighlighted ? highlightRef : undefined}
                   className={`mb-6 text-justify ${
                     isHighlighted && highlightedFinding
-                      ? highlightBlockClass(highlightedFinding.severity)
+                      ? highlightBlockClass(
+                          highlightedFinding.severity,
+                          match?.kind === "fuzzy",
+                        )
                       : ""
                   }`}
                 >
@@ -794,6 +890,7 @@ function DocumentViewer({
               const isHighlighted = Boolean(
                 highlightedFinding && match?.paragraphIndex === idx,
               );
+              const isFuzzy = isHighlighted && match?.kind === "fuzzy";
               let bodyMatch: HighlightMatch | null = null;
               if (isHighlighted && highlightedFinding && match) {
                 if (match.kind === "exact") {
@@ -817,7 +914,10 @@ function DocumentViewer({
                   ref={isHighlighted ? highlightRef : undefined}
                   className={`mb-7 ${
                     isHighlighted && highlightedFinding
-                      ? highlightBlockClass(highlightedFinding.severity)
+                      ? highlightBlockClass(
+                          highlightedFinding.severity,
+                          isFuzzy,
+                        )
                       : ""
                   }`}
                 >
@@ -1019,8 +1119,8 @@ function SummaryBar({ findings }: { findings: Finding[] }) {
 // ─── Terminology helpers ──────────────────────────────────────────────────────
 
 function glossaryUnavailableMessage(reason?: string | null): string {
-  if (reason === "api_quota_exhausted") {
-    return "Terminology check unavailable — API quota exhausted, try again shortly.";
+  if (reason === "llm_unavailable" || reason === "api_quota_exhausted") {
+    return "Terminology check unavailable — local LLM busy or offline, try again shortly.";
   }
   return "Terminology check unavailable — please try again shortly.";
 }
@@ -1039,7 +1139,9 @@ function TerminologyFindingCard({ finding }: { finding: GlossaryFinding }) {
       </div>
       <p className="text-xs text-[#6B7280] mb-2 leading-relaxed">
         Use:{" "}
-        <span className="font-medium text-[#2563EB]">{finding.canonical_term}</span>
+        <span className="font-medium text-[#2563EB]">
+          {finding.canonical_term}
+        </span>
       </p>
       <p className="text-xs text-[#374151] mb-2">{finding.reason}</p>
       <p className="text-[10px] text-[#9CA3AF] font-mono bg-[#F9FAFB] rounded-lg px-2 py-1.5 border border-[#F3F4F6] leading-relaxed">
@@ -1049,7 +1151,11 @@ function TerminologyFindingCard({ finding }: { finding: GlossaryFinding }) {
   );
 }
 
-function TerminologyPanel({ glossaryCheck }: { glossaryCheck: GlossaryCheckSection | null }) {
+function TerminologyPanel({
+  glossaryCheck,
+}: {
+  glossaryCheck: GlossaryCheckSection | null;
+}) {
   if (!glossaryCheck) {
     return (
       <div className="text-center py-10">
@@ -1075,7 +1181,8 @@ function TerminologyPanel({ glossaryCheck }: { glossaryCheck: GlossaryCheckSecti
     return (
       <div className="bg-white rounded-2xl border border-amber-200 p-6 text-center">
         <p className="text-sm text-amber-800 leading-relaxed">
-          Terminology check could not be completed. Other analysis results are still valid.
+          Terminology check could not be completed. Other analysis results are
+          still valid.
         </p>
       </div>
     );
@@ -1100,7 +1207,10 @@ function TerminologyPanel({ glossaryCheck }: { glossaryCheck: GlossaryCheckSecti
   return (
     <div className="space-y-3">
       {glossaryCheck.findings.map((finding, idx) => (
-        <TerminologyFindingCard key={`${finding.text_found}-${idx}`} finding={finding} />
+        <TerminologyFindingCard
+          key={`${finding.text_found}-${idx}`}
+          finding={finding}
+        />
       ))}
     </div>
   );
@@ -1120,9 +1230,8 @@ function ProcessingView({
   onError: () => void;
 }) {
   const [currentStep, setCurrentStep] = useState(0);
-  const [analysisResult, setAnalysisResult] = useState<DraftAnalysisResponse | null>(
-    null,
-  );
+  const [analysisResult, setAnalysisResult] =
+    useState<DraftAnalysisResponse | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
@@ -1138,9 +1247,7 @@ function ProcessingView({
         setDone(true);
       })
       .catch((err: ApiError | Error) => {
-        setErrorMsg(
-          err.message || "Failed to connect to the analysis API.",
-        );
+        setErrorMsg(err.message || "Failed to connect to the analysis API.");
       });
   }, [draftText]);
 
@@ -1349,9 +1456,13 @@ const ANALYSIS_FEATURES = [
 
 function GrStructureRulesSection({ compact = false }: { compact?: boolean }) {
   return (
-    <section className={compact ? "w-full" : "px-6 pb-8 max-w-3xl mx-auto w-full"}>
+    <section
+      className={compact ? "w-full" : "px-6 pb-8 max-w-3xl mx-auto w-full"}
+    >
       <div className="bg-white rounded-xl border border-[#E5E7EB] shadow-sm overflow-hidden h-full">
-        <div className={`border-b border-[#F3F4F6] bg-[#F9FAFB] ${compact ? "px-3 py-3" : "px-6 py-5"}`}>
+        <div
+          className={`border-b border-[#F3F4F6] bg-[#F9FAFB] ${compact ? "px-3 py-3" : "px-6 py-5"}`}
+        >
           <div className="flex items-start gap-2">
             <div
               className={`rounded-lg bg-[#EFF6FF] flex items-center justify-center flex-shrink-0 ${
@@ -1409,7 +1520,9 @@ function GrStructureRulesSection({ compact = false }: { compact?: boolean }) {
                   )}
                   <span
                     className={`font-semibold rounded ${
-                      compact ? "text-[9px] px-1 py-px" : "text-[10px] px-2 py-0.5 rounded-md"
+                      compact
+                        ? "text-[9px] px-1 py-px"
+                        : "text-[10px] px-2 py-0.5 rounded-md"
                     } ${
                       rule.required
                         ? "bg-red-50 text-red-700 border border-red-100"
@@ -1478,8 +1591,8 @@ function AnalysisFeaturesSection() {
           Analysis Capabilities
         </h2>
         <p className="text-xs text-[#6B7280] leading-relaxed max-w-lg">
-          Upload a Government Resolution to run conflict, template, and terminology
-          checks in parallel against the statutory database.
+          Upload a Government Resolution to run conflict, template, and
+          terminology checks in parallel against the statutory database.
         </p>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1565,19 +1678,20 @@ function UploadCard({
     if (mode === "paste") {
       const textToUse = pastedText.trim();
       if (!textToUse) {
-        setExtractError("Paste draft text or load the Maharashtra sample draft.");
+        setExtractError(
+          "Paste draft text or load the Maharashtra sample draft.",
+        );
         return;
       }
       onUpload(textToUse, "Pasted_Draft_Resolution.txt");
     } else {
       if (!fileText.trim()) {
-        setExtractError("Upload a document with readable text, or switch to paste mode.");
+        setExtractError(
+          "Upload a document with readable text, or switch to paste mode.",
+        );
         return;
       }
-      onUpload(
-        fileText.trim(),
-        fileName || MAHARASHTRA_SAMPLE_FILENAME,
-      );
+      onUpload(fileText.trim(), fileName || MAHARASHTRA_SAMPLE_FILENAME);
     }
   };
 
@@ -1675,7 +1789,10 @@ function UploadCard({
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-xl bg-[#DCFCE7] flex items-center justify-center">
                   {extracting ? (
-                    <Loader2 size={18} className="text-[#2563EB] animate-spin" />
+                    <Loader2
+                      size={18}
+                      className="text-[#2563EB] animate-spin"
+                    />
                   ) : (
                     <FileText size={18} className="text-[#22C55E]" />
                   )}
@@ -1762,12 +1879,10 @@ export default function App() {
   const [conflictResult, setConflictResult] = useState<ConflictFinding | null>(
     null,
   );
-  const [glossaryCheck, setGlossaryCheck] = useState<GlossaryCheckSection | null>(
-    null,
-  );
-  const [templateCheck, setTemplateCheck] = useState<TemplateCheckSection | null>(
-    null,
-  );
+  const [glossaryCheck, setGlossaryCheck] =
+    useState<GlossaryCheckSection | null>(null);
+  const [templateCheck, setTemplateCheck] =
+    useState<TemplateCheckSection | null>(null);
   const [reviewPanel, setReviewPanel] = useState<
     "conflicts" | "terminology" | "template"
   >("conflicts");
@@ -1821,10 +1936,7 @@ export default function App() {
           checked: true,
           reachable: true,
           degraded: res.status === "degraded" || warnings.length > 0,
-          msg:
-            warnings.length > 0
-              ? warnings.join(" · ")
-              : undefined,
+          msg: warnings.length > 0 ? warnings.join(" · ") : undefined,
         });
       })
       .catch(() => {
@@ -1848,7 +1960,10 @@ export default function App() {
   };
 
   const handleProcessingComplete = (analysis: DraftAnalysisResponse) => {
-    if (analysis.conflict_check.status === "ok" && analysis.conflict_check.result) {
+    if (
+      analysis.conflict_check.status === "ok" &&
+      analysis.conflict_check.result
+    ) {
       setConflictResult(analysis.conflict_check.result);
     } else {
       setConflictResult(null);
@@ -1887,12 +2002,131 @@ export default function App() {
     });
   };
 
+  const exportTextFile = (filename: string, content: string) => {
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  };
+
+  const safeFileName = (rawName: string, fallback: string) => {
+    const slug = rawName.trim() || fallback;
+    return slug.replace(/\.[^/.]+$/, "") || fallback;
+  };
+
+  const hasIssues =
+    !!conflictResult?.conflicting ||
+    (templateCheck?.violations?.length ?? 0) > 0 ||
+    (glossaryCheck?.findings?.length ?? 0) > 0;
+
+  const canExportDraft =
+    phase === "review" && !hasIssues && draftText.trim().length > 0;
+
+  const handleDraftExport = () => {
+    if (!canExportDraft) {
+      showToast("Draft export is available only when no issues are detected");
+      return;
+    }
+
+    const fileNameForExport = safeFileName(
+      fileName || "draft-export",
+      "draft-export",
+    );
+    exportTextFile(`${fileNameForExport}.txt`, draftText);
+    showToast("Draft exported");
+  };
+
+  const handleReportExport = () => {
+    const lines: string[] = [
+      "Government Resolution Review Report",
+      `Document: ${fileName || "Untitled draft"}`,
+      `Generated: ${new Date().toISOString()}`,
+      "",
+      `Status: ${hasIssues ? "Issues detected" : "No issues detected"}`,
+      "",
+    ];
+
+    if (conflictResult?.conflicting) {
+      lines.push("Conflict findings:");
+      conflictFindings.forEach((finding, index) => {
+        lines.push(
+          `${index + 1}. [${finding.severity.toUpperCase()}] ${finding.summary}`,
+        );
+        lines.push(`   Clause / reference: ${finding.clauseNumber}`);
+        lines.push(`   Conflict type: ${finding.conflictType || "unknown"}`);
+        lines.push(`   Analysis: ${finding.analysis}`);
+        lines.push(`   Recommendation: ${finding.recommendation}`);
+        if (finding.draftExcerpt) {
+          lines.push(`   Draft text: ${finding.draftExcerpt}`);
+        }
+        if (finding.corpusExcerpt) {
+          lines.push(`   Related GR text: ${finding.corpusExcerpt}`);
+        }
+        if (finding.corpusGrNumber) {
+          lines.push(`   Related GR number: ${finding.corpusGrNumber}`);
+        }
+        lines.push("");
+      });
+    } else {
+      lines.push("Conflict findings: none");
+      lines.push("");
+    }
+
+    if ((templateCheck?.violations?.length ?? 0) > 0) {
+      lines.push("Template issues:");
+      templateCheck?.violations.forEach((item, index) => {
+        lines.push(
+          `${index + 1}. [${item.severity.toUpperCase()}] ${item.section_label}`,
+        );
+        lines.push(`   Type: ${item.violation_type}`);
+        if (item.description) {
+          lines.push(`   Details: ${item.description}`);
+        }
+        if (item.expected_after) {
+          lines.push(`   Expected after: ${item.expected_after}`);
+        }
+        if (item.found_at_line) {
+          lines.push(`   Found at line: ${item.found_at_line}`);
+        }
+        lines.push("");
+      });
+    } else {
+      lines.push("Template issues: none");
+      lines.push("");
+    }
+
+    if ((glossaryCheck?.findings?.length ?? 0) > 0) {
+      lines.push("Glossary issues:");
+      glossaryCheck?.findings.forEach((item, index) => {
+        lines.push(
+          `${index + 1}. ${item.message || item.term || "Glossary issue"}`,
+        );
+      });
+      lines.push("");
+    } else {
+      lines.push("Glossary issues: none");
+      lines.push("");
+    }
+
+    exportTextFile(
+      `${safeFileName(fileName || "report-export", "report-export")}.txt`,
+      lines.join("\n"),
+    );
+    showToast("Report exported");
+  };
+
   // Derive findings from real ConflictFinding response using adapter
   const conflictFindings: Finding[] = conflictResult
     ? mapConflictFindingToFindings(conflictResult)
     : [];
 
-  const templateFindings: Finding[] = mapTemplateFindingsToFindings(templateCheck);
+  const templateFindings: Finding[] =
+    mapTemplateFindingsToFindings(templateCheck);
 
   const findings: Finding[] =
     reviewPanel === "template" ? templateFindings : conflictFindings;
@@ -1908,15 +2142,16 @@ export default function App() {
       style={{ fontFamily: "Inter, sans-serif" }}
     >
       {/* Non-blocking health warning banner */}
-      {backendStatus.checked && (!backendStatus.reachable || backendStatus.degraded) && (
-        <div className="bg-amber-500 text-white text-xs font-semibold py-1.5 px-4 text-center flex items-center justify-center gap-2 z-50">
-          <AlertTriangle size={13} />
-          {backendStatus.msg ||
-            (backendStatus.reachable
-              ? "Backend is degraded — retrieval quality may be reduced"
-              : "FastAPI backend unreachable")}
-        </div>
-      )}
+      {backendStatus.checked &&
+        (!backendStatus.reachable || backendStatus.degraded) && (
+          <div className="bg-amber-500 text-white text-xs font-semibold py-1.5 px-4 text-center flex items-center justify-center gap-2 z-50">
+            <AlertTriangle size={13} />
+            {backendStatus.msg ||
+              (backendStatus.reachable
+                ? "Backend is degraded — retrieval quality may be reduced"
+                : "FastAPI backend unreachable")}
+          </div>
+        )}
 
       {/* ── Top Navigation ── */}
       <header className="h-16 bg-white border-b border-[#E5E7EB] flex items-center px-5 gap-4 flex-shrink-0 z-30">
@@ -1928,7 +2163,7 @@ export default function App() {
           />
           <div className="flex items-baseline gap-1.5">
             <span className="text-sm font-bold text-[#111827] tracking-tight">
-            निर्णय सहाय्यता
+              निर्णय सहाय्यता
             </span>
             <span className="hidden xl:block text-xs text-[#9CA3AF] font-medium">
               · Government of Maharashtra
@@ -1977,13 +2212,28 @@ export default function App() {
           {phase === "review" && (
             <>
               <button
-                onClick={() =>
-                  showToast("Exporting resolution review summary...")
+                onClick={handleDraftExport}
+                disabled={!canExportDraft}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
+                  canExportDraft
+                    ? "border-[#E5E7EB] text-[#374151] hover:bg-[#F9FAFB]"
+                    : "border-[#E5E7EB] text-[#9CA3AF] bg-[#F3F4F6] cursor-not-allowed"
+                }`}
+                title={
+                  canExportDraft
+                    ? "Download the original draft"
+                    : "Draft export is available only when no issues are detected"
                 }
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E5E7EB] text-xs font-semibold text-[#374151] hover:bg-[#F9FAFB] transition-colors"
               >
                 <Download size={12} />
-                Export
+                Draft Export
+              </button>
+              <button
+                onClick={handleReportExport}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E5E7EB] text-xs font-semibold text-[#374151] hover:bg-[#F9FAFB] transition-colors"
+              >
+                <FileText size={12} />
+                Report Export
               </button>
               <button
                 onClick={() => {
@@ -2095,7 +2345,9 @@ export default function App() {
             <div className="bg-amber-50 border-b border-amber-200 text-amber-900 text-xs px-6 py-2 flex items-start gap-2 flex-shrink-0">
               <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
               <div>
-                <span className="font-semibold">Analysis ran in degraded mode — </span>
+                <span className="font-semibold">
+                  Analysis ran in degraded mode —{" "}
+                </span>
                 {conflictResult.degradation_reasons.join(" · ")}
               </div>
             </div>
@@ -2228,7 +2480,13 @@ export default function App() {
               style={{ width: "35%" }}
             >
               {/* Summary stats */}
-              <SummaryBar findings={reviewPanel === "template" ? templateFindings : conflictFindings} />
+              <SummaryBar
+                findings={
+                  reviewPanel === "template"
+                    ? templateFindings
+                    : conflictFindings
+                }
+              />
               <TemplateAccuracyBar templateCheck={templateCheck} />
 
               {/* Panel header */}
@@ -2271,49 +2529,50 @@ export default function App() {
                   >
                     <Languages size={12} />
                     Terms
-                    {glossaryCheck?.status === "ok" && glossaryCheck.findings.length > 0 && (
-                      <span className="bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded-md">
-                        {glossaryCheck.findings.length}
-                      </span>
-                    )}
+                    {glossaryCheck?.status === "ok" &&
+                      glossaryCheck.findings.length > 0 && (
+                        <span className="bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded-md">
+                          {glossaryCheck.findings.length}
+                        </span>
+                      )}
                   </button>
                 </div>
 
                 {reviewPanel === "conflicts" && (
                   <>
-                <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-sm font-semibold text-[#111827]">
-                    Conflict Findings
-                  </h2>
-                  <span className="text-xs text-[#9CA3AF] bg-[#F3F4F6] px-2 py-0.5 rounded-md font-medium">
-                    {filteredFindings.length} shown
-                  </span>
-                </div>
+                    <div className="flex items-center justify-between mb-3">
+                      <h2 className="text-sm font-semibold text-[#111827]">
+                        Conflict Findings
+                      </h2>
+                      <span className="text-xs text-[#9CA3AF] bg-[#F3F4F6] px-2 py-0.5 rounded-md font-medium">
+                        {filteredFindings.length} shown
+                      </span>
+                    </div>
 
-                {/* Filter tabs */}
-                <div className="flex gap-1.5">
-                  {(["all", "high", "medium", "low"] as const).map((s) => (
-                    <button
-                      key={s}
-                      onClick={() => setFilterSeverity(s)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 ${
-                        filterSeverity === s
-                          ? s === "all"
-                            ? "bg-[#111827] text-white"
-                            : s === "high"
-                              ? "bg-red-600 text-white"
-                              : s === "medium"
-                                ? "bg-amber-500 text-white"
-                                : "bg-blue-600 text-white"
-                          : "text-[#6B7280] hover:bg-[#F3F4F6]"
-                      }`}
-                    >
-                      {s === "all"
-                        ? "All"
-                        : s.charAt(0).toUpperCase() + s.slice(1)}
-                    </button>
-                  ))}
-                </div>
+                    {/* Filter tabs */}
+                    <div className="flex gap-1.5">
+                      {(["all", "high", "medium", "low"] as const).map((s) => (
+                        <button
+                          key={s}
+                          onClick={() => setFilterSeverity(s)}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 ${
+                            filterSeverity === s
+                              ? s === "all"
+                                ? "bg-[#111827] text-white"
+                                : s === "high"
+                                  ? "bg-red-600 text-white"
+                                  : s === "medium"
+                                    ? "bg-amber-500 text-white"
+                                    : "bg-blue-600 text-white"
+                              : "text-[#6B7280] hover:bg-[#F3F4F6]"
+                          }`}
+                        >
+                          {s === "all"
+                            ? "All"
+                            : s.charAt(0).toUpperCase() + s.slice(1)}
+                        </button>
+                      ))}
+                    </div>
                   </>
                 )}
 
@@ -2356,7 +2615,8 @@ export default function App() {
                         Template Structure OK
                       </h3>
                       <p className="text-xs text-[#6B7280] leading-relaxed">
-                        All required GR sections are present and in the expected order.
+                        All required GR sections are present and in the expected
+                        order.
                       </p>
                     </div>
                   ) : (
@@ -2377,7 +2637,8 @@ export default function App() {
                 ) : !conflictResult ? (
                   <div className="bg-white rounded-2xl border border-red-200 p-6 text-center">
                     <p className="text-sm text-red-700 leading-relaxed">
-                      Conflict detection could not be completed. Terminology results may still be available in the Terminology tab.
+                      Conflict detection could not be completed. Terminology
+                      results may still be available in the Terminology tab.
                     </p>
                   </div>
                 ) : conflictResult && !conflictResult.conflicting ? (

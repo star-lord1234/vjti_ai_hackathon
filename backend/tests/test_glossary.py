@@ -33,11 +33,11 @@ def test_unavailable_when_no_api_keys():
     mock_mgr = MagicMock()
     mock_mgr.get_client.return_value = (None, None)
 
-    with patch("reasoning.glossary.checker.get_api_manager", return_value=mock_mgr):
+    with patch("reasoning.glossary.checker.get_llm_manager", return_value=mock_mgr):
         result = run_glossary_check("सक्षम अधिकारी मंजूर करण्यात येत आहे.")
 
     assert result.status == "unavailable"
-    assert result.reason == "api_quota_exhausted"
+    assert result.reason == "llm_unavailable"
     assert result.findings == []
 
 
@@ -61,7 +61,7 @@ def test_ok_when_llm_returns_findings():
     mock_completion.choices = [MagicMock(message=MagicMock(content=llm_payload.model_dump_json()))]
     mock_client.chat.completions.create.return_value = mock_completion
 
-    with patch("reasoning.glossary.checker.get_api_manager", return_value=mock_mgr):
+    with patch("reasoning.glossary.checker.get_llm_manager", return_value=mock_mgr):
         result = run_glossary_check("सक्षम अधिकारी मंजूर करण्यात येत आहे.")
 
     assert result.status == "ok"
@@ -78,4 +78,4 @@ def test_require_available_client_raises():
     with pytest.raises(GlossaryCheckUnavailable) as exc_info:
         _require_available_client(mock_mgr)
 
-    assert exc_info.value.reason == "api_quota_exhausted"
+    assert exc_info.value.reason == "llm_unavailable"

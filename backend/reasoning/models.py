@@ -59,7 +59,15 @@ class SupportingGR(BaseModel):
     )
     gr_number_canonical: Optional[str] = Field(
         default=None,
-        description="Canonical GR number if available",
+        description="Canonical GR number (internal key) if available",
+    )
+    gr_number_original: Optional[str] = Field(
+        default=None,
+        description="Official original GR number as it appears in the document.",
+    )
+    gr_number_normalized: Optional[str] = Field(
+        default=None,
+        description="Normalized/formatted GR number for display.",
     )
     relevance_note: Optional[str] = Field(
         default=None,
@@ -103,7 +111,15 @@ class ConflictPair(BaseModel):
     corpus_excerpt: str
     gr_label: str
     gr_number_canonical: Optional[str] = None
+    gr_number_original: Optional[str] = None
+    gr_number_normalized: Optional[str] = None
     relevance_note: Optional[str] = None
+    # Per-conflict structured English fields
+    per_conflict_explanation: Optional[str] = None
+    draft_proposes: Optional[str] = None
+    existing_gr_provides: Optional[str] = None
+    conflict_type: Optional[str] = None  # "override" | "overlap" | "inconsistency"
+    recommendation: Optional[str] = None
 
 
 class ConflictLLMOutput(BaseModel):

@@ -106,7 +106,7 @@ def reasoning_conflict(body: ConflictRequest) -> ConflictFinding:
 def reasoning_glossary(body: ConflictRequest) -> GlossaryCheckSection:
     """
     Bilingual terminology consistency check against the seeded GR glossary.
-    Returns status=unavailable (not HTTP 5xx) when all Groq API keys are on cooldown.
+    Returns status=unavailable (not HTTP 5xx) when the local LLM client is on cooldown.
     """
     return run_glossary_check(body.draft_text.strip())
 

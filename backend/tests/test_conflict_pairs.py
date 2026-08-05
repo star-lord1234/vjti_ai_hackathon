@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from reasoning.models import ConflictFinding, SupportingGR
 from reasoning.prompt_utils import (
+    _build_per_pair_recommendation,
     build_conflict_pairs,
     extract_corpus_excerpt_for_clause,
 )
@@ -46,3 +47,22 @@ def test_build_conflict_pairs_links_clause_to_corpus():
     assert len(pairs) == 1
     assert "25,000" in pairs[0].draft_clause
     assert "24,000" in pairs[0].corpus_excerpt
+
+
+def test_recommendations_are_context_specific():
+    amount_rec = _build_per_pair_recommendation(
+        "The draft grants scholarship of Rs. 1,00,000 against the approved ceiling of Rs. 75,000.",
+        "[GR 12]",
+        "override",
+        "Scholarship ceiling is capped at Rs. 75,000 per beneficiary.",
+    )
+    authority_rec = _build_per_pair_recommendation(
+        "The Principal may approve the claim without the competent authority's sanction.",
+        "[GR 6]",
+        "inconsistency",
+        "Only the competent authority may approve this claim.",
+    )
+
+    assert amount_rec != authority_rec
+    assert "amount" in amount_rec.lower() or "ceiling" in amount_rec.lower()
+    assert "authority" in authority_rec.lower() or "competent" in authority_rec.lower()

@@ -14,7 +14,15 @@ export interface ConflictPair {
   corpus_excerpt: string;
   gr_label: string;
   gr_number_canonical?: string | null;
+  gr_number_original?: string | null;
+  gr_number_normalized?: string | null;
   relevance_note?: string | null;
+  // Per-conflict structured English fields
+  per_conflict_explanation?: string | null;
+  draft_proposes?: string | null;
+  existing_gr_provides?: string | null;
+  conflict_type?: "override" | "overlap" | "inconsistency" | null;
+  recommendation?: string | null;
 }
 
 export interface RuleSignal {

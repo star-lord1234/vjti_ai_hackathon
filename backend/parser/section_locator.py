@@ -12,14 +12,17 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 from parser.section_patterns import (
+    BUDGET_HEAD_RE,
     DEPARTMENT_RE,
     DOC_TYPE_RE,
+    FINANCIAL_SANCTION_RE,
     GOVT_LINE_EN_RE,
     GOVT_LINE_RE,
     GR_NUMBER_RE,
     OPERATIVE_CLAUSE_RE,
     OPERATIVE_FALLBACK_RE,
     OPERATIVE_HEADING_RE,
+    PREAMBLE_SECTION_RE,
     PREAMBLE_START_RE,
     REF_SECTION_START_RE,
     SIGNATORY_RE,
@@ -230,6 +233,49 @@ def locate_operative_section(text: str) -> Optional[SectionMatch]:
     return None
 
 
+def locate_preamble_section(text: str) -> Optional[SectionMatch]:
+    """Preamble / background language preceding the operative decision."""
+    m = PREAMBLE_SECTION_RE.search(text)
+    if not m:
+        return None
+    return SectionMatch(
+        section_id="preamble_section",
+        char_offset=m.start(),
+        line_number=char_offset_to_line(text, m.start()),
+        matched_text=m.group(0).strip(),
+        end_offset=m.end(),
+    )
+
+
+def locate_financial_sanction_block(text: str) -> Optional[SectionMatch]:
+    """Funding / sanction language used to authorize the expense."""
+    for pattern in (FINANCIAL_SANCTION_RE,):
+        m = pattern.search(text)
+        if m:
+            return SectionMatch(
+                section_id="financial_sanction_block",
+                char_offset=m.start(),
+                line_number=char_offset_to_line(text, m.start()),
+                matched_text=text[m.start() : min(len(text), m.start() + 220)].strip(),
+                end_offset=min(len(text), m.start() + 220),
+            )
+    return None
+
+
+def locate_budget_head(text: str) -> Optional[SectionMatch]:
+    """Look for budget head or accounting head references in the sanction block."""
+    m = BUDGET_HEAD_RE.search(text)
+    if not m:
+        return None
+    return SectionMatch(
+        section_id="budget_head",
+        char_offset=m.start(),
+        line_number=char_offset_to_line(text, m.start()),
+        matched_text=m.group(0).strip(),
+        end_offset=m.end(),
+    )
+
+
 def locate_signatory_block(text: str) -> Optional[SectionMatch]:
     """Signatory closing block — searched in the tail of the document."""
     lines = text.splitlines()
@@ -274,8 +320,11 @@ def locate_signatory_block(text: str) -> Optional[SectionMatch]:
 LOCATORS: dict[str, Callable[[str], Optional[SectionMatch]]] = {
     "header_block": locate_header_block,
     "subject_line": locate_subject_line,
+    "preamble_section": locate_preamble_section,
     "references_section": locate_references_section,
     "operative_section": locate_operative_section,
+    "financial_sanction_block": locate_financial_sanction_block,
+    "budget_head": locate_budget_head,
     "signatory_block": locate_signatory_block,
 }
 

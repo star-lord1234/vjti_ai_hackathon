@@ -1,10 +1,10 @@
-"""Chat-specific exceptions (isolated from analysis APIManager)."""
+"""Chat-specific exceptions (isolated from analysis LLMClientManager)."""
 
 
 class ChatUnavailable(Exception):
-    """Chat Groq key is rate-limited or exhausted."""
+    """Local LLM is unavailable or cooling down."""
 
-    def __init__(self, reason: str = "api_quota_exhausted") -> None:
+    def __init__(self, reason: str = "llm_unavailable") -> None:
         self.reason = reason
         super().__init__(reason)
 

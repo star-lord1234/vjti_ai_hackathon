@@ -20,7 +20,7 @@ The conflict pipeline is document-level RAG, not clause-level retrieval:
     → pgvector (one 768-dim vector per GR, built from ~500 chars of OCR)
     → Neo4j CITES graph expansion (undirected, min 1 hop)
     → context block (600-char OCR excerpts, 8k char cap)
-    → Groq LLM (draft truncated to 3000 chars) → ConflictFinding JSON
+    → Ollama LLM (draft truncated) → ConflictFinding JSON
 
 Accuracy is capped primarily by RETRIEVAL RECALL and CONTEXT TRUNCATION. The LLM
 can only reason about conflicts in GRs it actually sees with enough operative text.
@@ -284,7 +284,7 @@ the architecture retrieves whole documents from header-heavy embeddings.
   Problem: Assumes conflicting_clauses[i] aligns with affected_grs[i].
   Impact: LLM order may differ; UI shows wrong GR next to each clause.
 
-[MEDIUM] Health check ignores Neo4j, embeddings, Groq
+[MEDIUM] Health check ignores Neo4j, embeddings, Ollama
   Files: backend/api/main.py (/health), frontend/src/app/App.tsx
   Problem: Banner only checks Postgres db flag.
   Impact: "Healthy" system may have empty graph, stale vectors, or broken LLM.
@@ -380,7 +380,7 @@ Phase 2 — Reliability & graph quality
   [ ] Directed or weighted CITES expansion (outgoing cites > undirected hub traversal)
   [ ] Post-LLM label_map validation (reject/hallucination-flag unknown [GR N] refs)
   [ ] Citation resolution rate gate in CI
-  [ ] Extend /health to Neo4j, embedding coverage %, Groq reachability
+  [ ] Extend /health to Neo4j, embedding coverage %, Ollama reachability
   [ ] Unify REASONING_MAX_FULL_TEXT_DOCS default
 
 Phase 3 — Evaluation & product hardening

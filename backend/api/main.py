@@ -9,13 +9,18 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-
+# Offline-first: must run before any Hugging Face / embedding imports on request paths.
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from offline import configure_offline_mode
+
+configure_offline_mode()
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from api.config import settings
 from api.routes import chat, documents, graph, reasoning, search

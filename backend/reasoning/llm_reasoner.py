@@ -1,6 +1,6 @@
 """
 LLM Reasoning engine for Q&A, pairwise GR comparison, and conflict detection.
-Uses Groq multi-key APIManager and strict Pydantic model validation.
+Uses local Ollama via LLMClientManager and strict Pydantic model validation.
 """
 
 from __future__ import annotations
@@ -19,6 +19,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 load_dotenv(ROOT / ".env")
+
+from offline import configure_offline_mode
+
+configure_offline_mode()
 
 from database.db import Database
 from embeddings.search import build_draft_query_segments
@@ -45,7 +49,7 @@ from reasoning.prompt_utils import (
     CONFLICT_DRAFT_CHARS,
     CONFLICT_EXCERPT_CHARS,
     CONFLICT_OUTPUT_SCHEMA,
-    GROQ_MAX_INPUT_TOKENS,
+    LLM_MAX_INPUT_TOKENS,
     MAX_PROMPT_CHARS,
     QUERY_OUTPUT_SCHEMA,
     REASONING_TEMPERATURE,
@@ -59,28 +63,28 @@ from reasoning.prompt_utils import (
     temporal_context_note,
 )
 from retrieval.hybrid import hybrid_search
-from scripts.api_manager import APIManager
+from llm.config import default_reasoning_model
+from llm.manager import LLMClientManager
 
-REASONING_MODEL = os.getenv("REASONING_MODEL", "llama-3.3-70b-versatile")
+REASONING_MODEL = default_reasoning_model()
 DEFAULT_MAX_FULL_TEXT = int(os.getenv("REASONING_MAX_FULL_TEXT_DOCS", "8"))
 CONFLICT_MAX_FULL_TEXT = int(os.getenv("CONFLICT_MAX_FULL_TEXT_DOCS", "5"))
 CONFLICT_TOP_K = int(os.getenv("CONFLICT_TOP_K", "10"))
 MAX_LLM_RETRIES = int(os.getenv("REASONING_MAX_RETRIES", "2"))
-ALLOW_SMALL_FALLBACK = os.getenv("REASONING_ALLOW_SMALL_FALLBACK", "false").lower() in (
-    "1",
-    "true",
-    "yes",
-)
 
-_api_manager: Optional[APIManager] = None
+_api_manager: Optional[LLMClientManager] = None
 
 
-def get_api_manager() -> APIManager:
-    """Lazy initialization of Groq APIManager singleton."""
+def get_llm_manager() -> LLMClientManager:
+    """Lazy initialization of local Ollama client manager."""
     global _api_manager
     if _api_manager is None:
-        _api_manager = APIManager()
+        _api_manager = LLMClientManager()
     return _api_manager
+
+
+# Backward-compatible alias used by glossary checker tests/patches
+get_api_manager = get_llm_manager
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -127,9 +131,7 @@ def _clean_json_text(text: str) -> str:
 
 
 def _fallback_models() -> list[str]:
-    models = [REASONING_MODEL, "llama-3.3-70b-versatile"]
-    if ALLOW_SMALL_FALLBACK:
-        models.append("llama-3.1-8b-instant")
+    models = [REASONING_MODEL]
     # Deduplicate preserving order
     seen: set[str] = set()
     out: list[str] = []
@@ -163,7 +165,7 @@ def _call_llm_json(
     compact_schema: Optional[str] = None,
     char_budget: Optional[int] = None,
 ) -> T:
-    """Groq JSON completion with prompt fitting and automatic shrink on token-limit errors."""
+    """LLM JSON completion with prompt fitting and automatic shrink on token-limit errors."""
     if max_retries is None:
         max_retries = MAX_LLM_RETRIES
 
@@ -171,7 +173,7 @@ def _call_llm_json(
     base_usr = user_prompt
     curr_budget = char_budget or MAX_PROMPT_CHARS
     schema_hint = compact_schema or "valid JSON with all required fields"
-    api_mgr = get_api_manager()
+    api_mgr = get_llm_manager()
     last_exception: Optional[Exception] = None
 
     for model_name in _fallback_models():
@@ -219,7 +221,7 @@ def _call_llm_json(
                         budget = max(2500, int(budget * 0.65))
                         curr_budget = budget
                         print(
-                            f"Warning: Groq token limit ({e}). "
+                            f"Warning: LLM context limit ({e}). "
                             f"Shrinking to {budget} chars (pass {shrink_pass + 1})..."
                         )
                         continue
@@ -244,7 +246,7 @@ def _call_llm_json(
                 break
 
     raise RuntimeError(
-        f"Failed to generate valid {model_cls.__name__} output from Groq API: {last_exception}"
+        f"Failed to generate valid {model_cls.__name__} output from LLM: {last_exception}"
     ) from last_exception
 
 
@@ -487,7 +489,7 @@ JSON Schema:
         f"EXISTING GR CONTEXT (newest-first):{context_text}"
     )
 
-    conflict_budget = chars_for_token_budget(GROQ_MAX_INPUT_TOKENS - 800)
+    conflict_budget = chars_for_token_budget(LLM_MAX_INPUT_TOKENS - 800)
     llm_out = _call_llm_json(
         system_prompt,
         user_prompt,

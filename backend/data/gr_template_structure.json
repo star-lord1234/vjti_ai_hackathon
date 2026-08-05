@@ -21,6 +21,15 @@
       "weight": 1.0
     },
     {
+      "id": "preamble_section",
+      "label": "Preamble / background section",
+      "label_mr": "प्रस्तावना / पार्श्वभूमी",
+      "required": true,
+      "severity_missing": "high",
+      "severity_misordered": "high",
+      "weight": 1.0
+    },
+    {
       "id": "references_section",
       "label": "References (वाचा) section",
       "label_mr": "वाचा / संदर्भ",
@@ -33,6 +42,24 @@
       "id": "operative_section",
       "label": "Operative / decision paragraph(s)",
       "label_mr": "शासन निर्णय / ऑपरेटिव्ह परिच्छेद",
+      "required": true,
+      "severity_missing": "high",
+      "severity_misordered": "medium",
+      "weight": 1.0
+    },
+    {
+      "id": "financial_sanction_block",
+      "label": "Financial sanction / funding block",
+      "label_mr": "वित्त मान्यता / निधी समभाग",
+      "required": true,
+      "severity_missing": "high",
+      "severity_misordered": "medium",
+      "weight": 1.0
+    },
+    {
+      "id": "budget_head",
+      "label": "Budget head / accounting head",
+      "label_mr": "अर्थसंकल्प / लेखाशिर्ष",
       "required": true,
       "severity_missing": "high",
       "severity_misordered": "medium",

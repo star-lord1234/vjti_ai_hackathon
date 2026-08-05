@@ -1,4 +1,9 @@
-import { AffectedGR, ConflictFinding, ConflictPair, TemplateCheckSection } from "./api";
+import {
+  AffectedGR,
+  ConflictFinding,
+  ConflictPair,
+  TemplateCheckSection,
+} from "./api";
 
 export type Severity = "high" | "medium" | "low";
 
@@ -18,6 +23,7 @@ export interface Finding {
   page: number;
   lineRange: [number, number];
   category: string;
+  conflictType?: string;
   location?: string;
   crossDepartmental?: boolean;
 }
@@ -126,6 +132,27 @@ function findingFromPair(
   crossDept: boolean,
 ): Finding {
   const grLabel = pair.gr_label?.replace(/^\[|\]$/g, "") || `GR ${idx + 1}`;
+
+  // Prefer official GR number for display; fall back to canonical code only as last resort
+  const displayGrNumber =
+    pair.gr_number_original ||
+    pair.gr_number_normalized ||
+    pair.gr_number_canonical ||
+    undefined;
+
+  // Per-pair analysis: use per_conflict_explanation if available, else relevance_note only
+  // Never paste the global explanation into every card
+  const perPairAnalysis =
+    pair.per_conflict_explanation ||
+    pair.relevance_note ||
+    (conflictResult.supersession_detected ? "[Supersession detected]" : null) ||
+    "Insufficient evidence — no per-conflict analysis available.";
+
+  // Per-pair recommendation: use backend-provided one if available
+  const perPairRecommendation =
+    pair.recommendation ||
+    `Insufficient evidence — review ${grLabel} for conflicting provisions before drafting.`;
+
   return {
     id: `f-${idx + 1}`,
     severity,
@@ -133,18 +160,18 @@ function findingFromPair(
     summary: pair.draft_clause,
     matched_text: pair.draft_clause,
     matchedText: pair.draft_clause,
-    draftExcerpt: pair.draft_clause,
-    corpusExcerpt: pair.corpus_excerpt,
+    draftExcerpt: pair.draft_proposes || pair.draft_clause,
+    corpusExcerpt: pair.existing_gr_provides || pair.corpus_excerpt,
     corpusGrLabel: pair.gr_label,
-    corpusGrNumber: pair.gr_number_canonical || undefined,
-    analysis: `${conflictResult.explanation}${
-      pair.relevance_note ? ` ${pair.relevance_note}` : ""
-    }${conflictResult.supersession_detected ? " [Supersession detected]" : ""}`,
-    recommendation:
-      "Review recommended: Align draft language with the cited existing GR provision.",
+    corpusGrNumber: displayGrNumber,
+    analysis: perPairAnalysis,
+    recommendation: perPairRecommendation,
     page: 1,
     lineRange: [0, 0],
-    category: pair.gr_number_canonical || grLabel,
+    category: pair.conflict_type
+      ? `${pair.conflict_type.charAt(0).toUpperCase()}${pair.conflict_type.slice(1)}`
+      : displayGrNumber || grLabel,
+    conflictType: pair.conflict_type || undefined,
     crossDepartmental: crossDept,
   };
 }
@@ -166,12 +193,25 @@ export function mapConflictFindingToFindings(
   const grs = conflictResult.affected_grs || [];
 
   if (pairs.length > 0) {
-    return pairs.map((pair, idx) =>
+    // Deduplicate pairs that share the same (draft_clause, gr_label) key
+    const seen = new Set<string>();
+    const dedupedPairs = pairs.filter((pair) => {
+      const key = `${pair.draft_clause.slice(0, 120)}::${pair.gr_label}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return dedupedPairs.map((pair, idx) =>
       findingFromPair(
         pair,
         idx,
         conflictResult,
-        deriveClauseSeverity(globalConfidence, idx, pairs.length, crossDept),
+        deriveClauseSeverity(
+          globalConfidence,
+          idx,
+          dedupedPairs.length,
+          crossDept,
+        ),
         crossDept,
       ),
     );
@@ -186,12 +226,32 @@ export function mapConflictFindingToFindings(
 
       const clauseLabel =
         matchedGr?.label?.replace(/^\[|\]$/g, "") || `Clause ${idx + 1}`;
-      const category =
+
+      // Prefer official GR number for display
+      const displayGrNumber =
+        (matchedGr as any)?.gr_number_original ||
+        (matchedGr as any)?.gr_number_normalized ||
         matchedGr?.gr_number_canonical ||
-        matchedGr?.label ||
-        "Policy Conflict";
+        undefined;
+
+      const category = displayGrNumber || matchedGr?.label || "Policy Conflict";
       const corpusExcerpt =
         matchedGr?.corpus_excerpt || matchedGr?.relevance_note || "";
+
+      // Per-clause analysis: use relevance_note, never the global explanation
+      const perClauseAnalysis = matchedGr?.relevance_note
+        ? `${matchedGr.relevance_note}${
+            conflictResult.supersession_detected
+              ? " [Supersession detected]"
+              : ""
+          }`
+        : conflictResult.supersession_detected
+          ? "[Supersession detected]"
+          : "Insufficient evidence — no per-clause analysis available.";
+
+      const perClauseRecommendation = matchedGr?.relevance_note
+        ? `Review ${clauseLabel}: ${matchedGr.relevance_note}. Align draft clause or state the basis for deviation.`
+        : `Insufficient evidence — review ${clauseLabel} for conflicting provisions before drafting.`;
 
       return {
         id: `f-${idx + 1}`,
@@ -208,44 +268,62 @@ export function mapConflictFindingToFindings(
         draftExcerpt: clauseText,
         corpusExcerpt,
         corpusGrLabel: matchedGr?.label,
-        corpusGrNumber: matchedGr?.gr_number_canonical || undefined,
-        analysis: `${conflictResult.explanation}${
-          matchedGr?.relevance_note
-            ? ` Relevant reference: ${matchedGr.relevance_note}`
-            : ""
-        }${conflictResult.supersession_detected ? " [Supersession detected]" : ""}`,
-        recommendation:
-          "Review recommended: Verify draft clause alignment against cited Government Resolution provisions.",
+        corpusGrNumber: displayGrNumber,
+        analysis: perClauseAnalysis,
+        recommendation: perClauseRecommendation,
         page: 1,
         lineRange: [0, 0] as [number, number],
         category,
+        conflictType: undefined,
         crossDepartmental: crossDept,
       };
     });
   }
 
   if (grs.length > 0) {
-    return grs.map((gr, idx) => ({
-      id: `f-${idx + 1}`,
-      severity: deriveClauseSeverity(globalConfidence, idx, grs.length, crossDept),
-      clauseNumber: gr.label || `GR ${idx + 1}`,
-      summary:
+    return grs.map((gr, idx) => {
+      // Prefer official GR number for display
+      const displayGrNumber =
+        (gr as any).gr_number_original ||
+        (gr as any).gr_number_normalized ||
+        gr.gr_number_canonical ||
+        undefined;
+
+      const perGrAnalysis =
         gr.relevance_note ||
-        `Potential conflict with ${gr.gr_number_canonical || gr.label}`,
-      matched_text: gr.relevance_note || "",
-      matchedText: gr.relevance_note || "",
-      draftExcerpt: "",
-      corpusExcerpt: gr.corpus_excerpt || gr.relevance_note || "",
-      corpusGrLabel: gr.label,
-      corpusGrNumber: gr.gr_number_canonical || undefined,
-      analysis: conflictResult.explanation,
-      recommendation:
-        "Review recommended: Align draft language with existing statutory guidelines.",
-      page: 1,
-      lineRange: [0, 0] as [number, number],
-      category: gr.label || "Legal Conflict",
-      crossDepartmental: crossDept,
-    }));
+        "Insufficient evidence — no per-GR analysis available.";
+
+      const perGrRecommendation = gr.relevance_note
+        ? `Review ${gr.label}: ${gr.relevance_note}. Align draft language or state the basis for deviation.`
+        : `Insufficient evidence — review ${gr.label} for conflicting provisions before drafting.`;
+
+      return {
+        id: `f-${idx + 1}`,
+        severity: deriveClauseSeverity(
+          globalConfidence,
+          idx,
+          grs.length,
+          crossDept,
+        ),
+        clauseNumber: gr.label || `GR ${idx + 1}`,
+        summary:
+          gr.relevance_note ||
+          `Potential conflict with ${displayGrNumber || gr.label}`,
+        matched_text: gr.relevance_note || "",
+        matchedText: gr.relevance_note || "",
+        draftExcerpt: "",
+        corpusExcerpt: gr.corpus_excerpt || gr.relevance_note || "",
+        corpusGrLabel: gr.label,
+        corpusGrNumber: displayGrNumber,
+        analysis: perGrAnalysis,
+        recommendation: perGrRecommendation,
+        page: 1,
+        lineRange: [0, 0] as [number, number],
+        category: gr.label || "Legal Conflict",
+        conflictType: undefined,
+        crossDepartmental: crossDept,
+      };
+    });
   }
 
   return [];

@@ -142,7 +142,8 @@ def hybrid_search(
 
     try:
         query_sql = """
-        SELECT id, filename, gr_number_canonical, department, gr_date, subject_mr
+        SELECT id, filename, gr_number_canonical, gr_number_original, gr_number_normalized,
+               department, gr_date, subject_mr
         FROM gr_documents
         WHERE id = ANY(%s)
         """
@@ -165,6 +166,8 @@ def hybrid_search(
             "id": doc_id,
             "filename": meta_row.get("filename"),
             "gr_number_canonical": meta_row.get("gr_number_canonical"),
+            "gr_number_original": meta_row.get("gr_number_original"),
+            "gr_number_normalized": meta_row.get("gr_number_normalized"),
             "department": meta_row.get("department"),
             "gr_date": meta_row.get("gr_date"),
             "subject_mr": meta_row.get("subject_mr"),

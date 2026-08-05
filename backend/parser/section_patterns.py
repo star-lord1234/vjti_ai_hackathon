@@ -62,6 +62,21 @@ REF_SECTION_STOP_RE = re.compile(
 )
 
 PREAMBLE_START_RE = re.compile(r"^प्रस्तावना\b", re.MULTILINE)
+PREAMBLE_SECTION_RE = re.compile(
+    r"^(?:प्रस्तावना|Preamble)\s*[:ः\-]?\s*.*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+FINANCIAL_SANCTION_RE = re.compile(
+    r"(?:निधी\s*वितरीत|सदर\s*खर्च|वित्त\s*विभाग|मागणी\s*क्र|लेखाशिर्ष|लेखाशीर्ष|अर्थसंकल्प|अनुदान|वितरित\s*करणेबाबत)",
+    re.IGNORECASE,
+)
+
+BUDGET_HEAD_RE = re.compile(
+    r"(?:मागणी\s*क्र\.?\s*[^\n]{0,80}(?:\d{4}|[०१२३४५६७८९]{4})\s*(?:\d{3,4}|[०१२३४५६७८९]{3,4})|"
+    r"(?:लेखाशिर्ष|लेखाशीर्ष)[^\n]{0,80}(?:\d{4}|[०१२३४५६७८९]{4})\s*(?:\d{3,4}|[०१२३४५६७८९]{3,4}))",
+    re.IGNORECASE,
+)
 
 # Operative decision block — not the header "शासन निर्णय क्र." line.
 OPERATIVE_HEADING_RE = re.compile(

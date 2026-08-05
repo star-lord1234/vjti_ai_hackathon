@@ -4,14 +4,20 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from dotenv import load_dotenv
-from sentence_transformers import SentenceTransformer
-from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 load_dotenv(ROOT / ".env")
+
+from offline import configure_offline_mode
+
+configure_offline_mode()
+
+from sentence_transformers import SentenceTransformer
+
+from tqdm import tqdm
 
 from database.db import Database, VECTOR_DIM
 from embeddings.embed_text import build_embedding_text, chunk_text
@@ -24,6 +30,11 @@ MODEL_NAME = os.getenv(
 DEFAULT_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
 CHUNK_SIZE = int(os.getenv("EMBEDDING_CHUNK_SIZE", "800"))
 CHUNK_OVERLAP = int(os.getenv("EMBEDDING_CHUNK_OVERLAP", "150"))
+EMBEDDING_LOCAL_FILES_ONLY = os.getenv("EMBEDDING_LOCAL_FILES_ONLY", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 _model: Optional[SentenceTransformer] = None
 
@@ -51,7 +62,19 @@ def get_model(model_name: Optional[str] = None) -> SentenceTransformer:
     if _model is None:
         name = model_name or MODEL_NAME
         print(f"Loading embedding model: {name}...")
-        _model = SentenceTransformer(name)
+        try:
+            _model = SentenceTransformer(
+                name,
+                local_files_only=EMBEDDING_LOCAL_FILES_ONLY,
+            )
+        except Exception as exc:
+            if EMBEDDING_LOCAL_FILES_ONLY:
+                raise RuntimeError(
+                    f"Could not load embedding model offline ({name}). "
+                    "While online, run once: cd backend && python -m embeddings.embed "
+                    "Or set EMBEDDING_LOCAL_FILES_ONLY=false when you have network access."
+                ) from exc
+            raise
         validate_embedding_dimension(_model)
         print(f"Model loaded successfully (dim={get_vector_dim()}).")
     return _model

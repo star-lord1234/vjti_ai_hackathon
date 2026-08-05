@@ -1,7 +1,7 @@
 """
-Document-aware GR draft chatbot — isolated Groq client (GROQ_CHAT_API_KEY only).
+Document-aware GR draft chatbot — isolated local Ollama client.
 
-Does NOT use the shared analysis APIManager or reasoning LLM paths.
+Does NOT use the shared analysis LLMClientManager or reasoning LLM paths.
 """
 
 from __future__ import annotations
@@ -10,26 +10,27 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from dotenv import load_dotenv
-from groq import Groq
 
 from chat.exceptions import ChatRateLimited, ChatUnavailable
 from chat.models import ChatHistoryMessage, ChatMessageRequest, ChatMessageResponse
 from chat.rate_limit import check_rate_limit
+from llm.client import create_chat_client
+from llm.config import default_chat_model
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
 logger = logging.getLogger(__name__)
 
-CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "llama-3.1-8b-instant")
-CHAT_MAX_TOKENS = int(os.getenv("GROQ_CHAT_MAX_TOKENS", "400"))
-CHAT_MAX_DRAFT_CHARS = int(os.getenv("GROQ_CHAT_MAX_DRAFT_CHARS", "8000"))
-CHAT_MAX_HISTORY = int(os.getenv("GROQ_CHAT_MAX_HISTORY", "12"))
-CHAT_TEMPERATURE = float(os.getenv("GROQ_CHAT_TEMPERATURE", "0.2"))
-CHAT_COOLDOWN_SECONDS = float(os.getenv("GROQ_CHAT_COOLDOWN_SECONDS", "30"))
+CHAT_MODEL = default_chat_model()
+CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "400"))
+CHAT_MAX_DRAFT_CHARS = int(os.getenv("CHAT_MAX_DRAFT_CHARS", "8000"))
+CHAT_MAX_HISTORY = int(os.getenv("CHAT_MAX_HISTORY", "12"))
+CHAT_TEMPERATURE = float(os.getenv("CHAT_TEMPERATURE", "0.2"))
+CHAT_COOLDOWN_SECONDS = float(os.getenv("CHAT_COOLDOWN_SECONDS", "30"))
 
 _SYSTEM_PROMPT = """You are a Maharashtra Government Resolution (GR) drafting assistant embedded in a review tool.
 
@@ -41,25 +42,25 @@ You help the user understand the SPECIFIC draft text provided below. Rules:
 - If asked about conflicts, corpus policy, or statutory compliance beyond the draft text, explain that full analysis runs separately in the app's analysis panels.
 """
 
-_chat_client: Optional[Groq] = None
+_chat_client: Optional[Any] = None
 _chat_cooldown_until: float = 0.0
 
 
-def _get_chat_client() -> Groq:
+def _get_chat_client() -> Any:
     global _chat_client
     if _chat_client is None:
-        api_key = os.getenv("GROQ_CHAT_API_KEY", "").strip()
-        if not api_key:
-            raise ChatUnavailable("chat_api_key_missing")
-        _chat_client = Groq(api_key=api_key)
-        logger.info("Initialized isolated Groq chat client (GROQ_CHAT_API_KEY).")
+        try:
+            _chat_client = create_chat_client()
+        except RuntimeError as exc:
+            raise ChatUnavailable("chat_unavailable") from exc
+        logger.info("Initialized isolated Ollama chat client.")
     return _chat_client
 
 
 def _require_chat_available() -> None:
     global _chat_cooldown_until
     if time.time() < _chat_cooldown_until:
-        raise ChatUnavailable("api_quota_exhausted")
+        raise ChatUnavailable("llm_unavailable")
 
 
 def _mark_chat_rate_limited(retry_after: Optional[float] = None) -> None:
@@ -67,7 +68,7 @@ def _mark_chat_rate_limited(retry_after: Optional[float] = None) -> None:
     cooldown = float(retry_after) if retry_after is not None else CHAT_COOLDOWN_SECONDS
     cooldown = max(1.0, cooldown) + 0.35
     _chat_cooldown_until = max(_chat_cooldown_until, time.time() + cooldown)
-    logger.warning("Chat API key cooling for %.1fs (isolated from analysis pool).", cooldown)
+    logger.warning("Chat LLM cooling for %.1fs (isolated from analysis pool).", cooldown)
 
 
 def _trim_draft(draft_text: str) -> str:
@@ -147,10 +148,10 @@ def handle_chat_message(request: ChatMessageRequest) -> ChatMessageResponse:
 
     except Exception as exc:
         err = str(exc).lower()
-        if any(kw in err for kw in ("rate limit", "429", "quota", "tokens per")):
+        if any(kw in err for kw in ("rate limit", "429", "quota", "tokens per", "overloaded")):
             _mark_chat_rate_limited()
-            logger.warning("Chat Groq rate limit: %s", exc)
-            return ChatMessageResponse(status="unavailable", reason="api_quota_exhausted")
+            logger.warning("Chat LLM rate limit: %s", exc)
+            return ChatMessageResponse(status="unavailable", reason="llm_unavailable")
 
         logger.exception("Chat message failed: %s", exc)
         return ChatMessageResponse(
