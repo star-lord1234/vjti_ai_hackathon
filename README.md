@@ -212,6 +212,8 @@ OCR fulltext (.txt)
 
 ## What this project does
 
+End-to-end **Maharashtra GR intelligence and draft review** — from corpus ingest through hybrid search, local LLM reasoning, and an officer-facing web UI with explicit save, versioning, and audit.
+
 ### 1. Hybrid metadata extraction
 
 - **`parser/rule_extractor.py`** — extracts `document_type`, `department`, `gr_number`, `date`, `subject`, and `references` (वाचा / संदर्भ) from the document header using regex only.
@@ -221,30 +223,85 @@ OCR fulltext (.txt)
 - Also writes **`gr_normalised`** (uniform GR number) into each JSON.
 - On this corpus (~6076 files), rules alone complete most documents; LLM is only for gaps.
 
-### 2. PostgreSQL ingest
+### 2. PostgreSQL ingest & embeddings
 
 - **`scripts/ingest.py`** + **`database/db.py`** upsert each JSON plus the matching OCR file into `gr_documents`.
 - Full OCR text lives in column **`ocr_text`** (not copied into Neo4j).
-- Optional chunk embeddings into **`gr_chunks`** during ingest.
+- **`embeddings/embed.py`** — document-level and clause-level vectors in **`gr_documents.embedding`** and **`gr_chunks`** (768-dim multilingual MPNet).
+- **`embeddings/search.py`** — pgvector cosine nearest-neighbour search over corpus GRs.
 
-### 3. Citation resolution
+### 3. Citation resolution & Neo4j graph
 
 - **`graph/reference_resolver.py`** reads citations from Postgres, extracts a GR number, normalizes it via **`parser/normalize.py`**, and matches `gr_number_canonical`.
 - Output: unique `(source_id, target_id)` edges. Unmatched citations are ignored (no hallucinated links).
-
-### 4. Neo4j graph load
-
 - **`graph/neo4j_loader.py`** creates `:GR` nodes and `CITES` relationships with `MERGE` (idempotent).
-- Node properties: `id`, `filename`, `gr_number`, `canonical_gr`, `department`, `date`, `subject`.
+- **`retrieval/hybrid.py`** — vector top_k seeds + Neo4j citation expansion (hops) for richer retrieval context.
 
-### 5. Draft analysis (web app)
+### 4. Offline deployment with Ollama (no cloud APIs)
 
-- **`POST /reasoning/analyze`** — parallel conflict + glossary + template checks on uploaded draft text.
-- **`reasoning/llm_reasoner.py`** — conflict / query / compare via shared multi-key `APIManager`.
-- **`reasoning/glossary/`** — isolated terminology prompt + `backend/data/glossary.json`.
-- **`reasoning/template/`** + **`parser/section_locator.py`** — rule-based GR structure scoring (`backend/data/gr_template_structure.json`).
-- **`chat/`** — document-aware assistant on a **dedicated local Ollama client** (never the analysis pool).
-- **`drafts/`** — persisted editable draft lifecycle with save, versioning, save-and-recheck flows, plus audit logging for draft analysis.
+- **All LLM inference runs locally** via [Ollama](https://ollama.com/) (`llama3.1` by default) — conflict detection, optional glossary LLM pass, corpus Q&A, GR comparison, ingest metadata backfill, and draft chat.
+- **`llm/client.py`** — lightweight httpx client to Ollama's OpenAI-compatible API (no `openai` package, no API keys).
+- **`llm/manager.py`** — shared analysis client pool for conflict / query / compare.
+- **`chat/service.py`** — **isolated** Ollama client for the draft assistant (never mixed with the analysis pool).
+- **`EMBEDDING_LOCAL_FILES_ONLY=true`** — sentence-transformers loads from local cache so conflict detection works **without WiFi** after the embedding model is cached once.
+- Postgres + Neo4j + Ollama on the same machine = fully **air-gapped** operation once corpus and models are in place.
+
+### 5. Hybrid retrieval & corpus reasoning
+
+- **`POST /search`** — hybrid vector + graph search over ~8,000 GRs.
+- **`POST /reasoning/query`** — RAG Q&A grounded in retrieved GR context (`QueryAnswer` with supporting GR citations).
+- **`POST /reasoning/compare`** — pairwise clause-level comparison and contradiction detection between two corpus GRs.
+- **`reasoning/context_builder.py`** + **`reasoning/retrieval_gate.py`** — OCR excerpts, temporal ordering, draft-overlap reranking, and pre-LLM quality gating.
+
+### 6. Conflict detection (draft vs corpus)
+
+- **`POST /reasoning/conflict`** and the conflict leg of **`POST /reasoning/analyze`**.
+- **`reasoning/llm_reasoner.py` → `check_conflict()`** — embeds draft clauses, hybrid-searches related corpus GRs, builds a Marathi/English prompt with rule signals and clause excerpts, then asks Ollama for a structured **`ConflictFinding`** (conflicting clauses, affected GRs, corpus excerpts, confidence).
+- Surfaces conflicts, duplications, supersession, and cross-departmental issues in the review UI with clause highlighting.
+
+### 7. Template compliance (rule-based, no LLM)
+
+- **`POST /reasoning/template`** and the template leg of **`POST /reasoning/analyze`**.
+- **`reasoning/template/`** + **`parser/section_locator.py`** — checks draft structure against **`backend/data/gr_template_structure.json`** (header, subject, preamble, operative section, financial sanction, budget head, signatory, etc.).
+- Weighted **accuracy score** over required sections; flags missing or misordered sections with severity (high / medium / low).
+- Instant — no network or LLM round-trip.
+
+### 8. Bilingual terminology / glossary checking
+
+- **`POST /reasoning/glossary`** and the glossary leg of **`POST /reasoning/analyze`**.
+- **`reasoning/glossary/`** + **`backend/data/glossary.json`** (~50 seeded Marathi/English GR terms and variants).
+- **Default: deterministic rule-based scan** (`GLOSSARY_USE_LLM=false`) — flags non-canonical glossary variants instantly with context snippets and confidence scores.
+- **Optional LLM pass** (`GLOSSARY_USE_LLM=true`) for deeper terminology review via Ollama when enabled.
+- Degrades gracefully (`status: unavailable`) if the LLM client is on cooldown — does not fail the whole analyse response.
+
+### 9. Combined draft analysis (`POST /reasoning/analyze`)
+
+- Runs **conflict + glossary + template** in one request; returns per-section status so partial success is supported (e.g. conflict OK, glossary unavailable).
+- Accepts optional **`gr_document_id`** and **`actor`** — when set, writes an **`ai_suggestion`** row to **`audit_log`** with the full finding snapshot.
+- Frontend **Processing** phase calls this on upload; results populate the **Conflicts**, **Template**, and **Terminology** review tabs.
+
+### 10. Editable drafts, versioning & audit trail
+
+- **`POST /drafts`** — create a persisted editable draft (`gr_documents` row + `gr_versions` v1).
+- **`POST /drafts/{id}/save`** — explicit save with deterministic template + glossary checks; **`human_edit`** audit row (with unified diff) when text changes.
+- **`POST /drafts/{id}/save-and-recheck`** — save + full conflict LLM recheck; promotes status to **`ready_for_approval`** when zero high-severity findings remain.
+- **`audit_log`** — centralized via **`services/audit.py` → `log_action()`**; records `human_edit`, `ai_suggestion`, `submitted_for_review`, actor, diff, and JSON finding snapshots.
+- **`gr_versions`** — full-text version history; **no duplicate version** when text is unchanged between saves.
+- **`gr_documents.status`** — `draft` · `ready_for_approval` · `approved`.
+- Frontend: editable textarea (no auto-save), **Save Draft** / **Save & Recheck** buttons, status badge, version indicator, unsaved-changes flag, preview mode with finding highlights.
+
+### 11. Document-aware draft chat
+
+- **`POST /chat/message`** — floating assistant in the review UI.
+- **`chat/service.py`** — answers questions about the current draft using retrieved corpus context; runs on a **dedicated local Ollama client**.
+- Stateless per request (`draft_text`, `message`, `history`); per-session rate limit.
+
+### 12. Web UI, health & operations
+
+- **React + Vite** app — upload TXT/PDF or paste draft, processing pipeline animation, three-panel review (document + findings + inspector), export, sample draft loader.
+- **`GET /health`** — Postgres, Neo4j, embedding coverage, and store-sync drift warnings.
+- **`database/sync_status.py`** — detects corpus/embedding/graph mismatches; excludes editable `draft-*` rows from embedding drift checks.
+- **pytest** unit tests (`make test-unit`); OpenAPI docs at `/docs`.
 
 ---
 
@@ -762,18 +819,18 @@ This phase adds a persisted draft workflow on top of the existing analyse UI: of
 
 ### What was added
 
-| Area | Capability |
-| ---- | ---------- |
-| **Database** | `audit_log`, `gr_versions`, and `gr_documents.status` (`draft` · `ready_for_approval` · `approved`) |
-| **Backend** | `services/audit.py` — single `log_action()` helper (no scattered INSERTs) |
-| **Backend** | `services/draft.py` — save, save-and-recheck, diff computation, status transitions |
-| **API** | `POST /drafts`, `GET /drafts/{id}`, `POST /drafts/{id}/save`, `POST /drafts/{id}/save-and-recheck` |
-| **API** | `POST /reasoning/analyze` accepts optional `gr_document_id` + `actor` to log initial analysis |
-| **Frontend** | Editable textarea in review phase (no auto-save); **Save Draft** and **Save & Recheck** buttons |
-| **Frontend** | Status badge, version indicator, and “unsaved changes” dirty state |
-| **Offline** | `EMBEDDING_LOCAL_FILES_ONLY=true`; Ollama via httpx (`llm/client.py`, no `openai` package) |
-| **Glossary** | Deterministic rule-based scan by default (`GLOSSARY_USE_LLM=false`) for instant terminology checks |
-| **Reliability** | Schema migrations run once per process (avoids Postgres deadlocks during parallel analyse) |
+| Area            | Capability                                                                                          |
+| --------------- | --------------------------------------------------------------------------------------------------- |
+| **Database**    | `audit_log`, `gr_versions`, and `gr_documents.status` (`draft` · `ready_for_approval` · `approved`) |
+| **Backend**     | `services/audit.py` — single `log_action()` helper (no scattered INSERTs)                           |
+| **Backend**     | `services/draft.py` — save, save-and-recheck, diff computation, status transitions                  |
+| **API**         | `POST /drafts`, `GET /drafts/{id}`, `POST /drafts/{id}/save`, `POST /drafts/{id}/save-and-recheck`  |
+| **API**         | `POST /reasoning/analyze` accepts optional `gr_document_id` + `actor` to log initial analysis       |
+| **Frontend**    | Editable textarea in review phase (no auto-save); **Save Draft** and **Save & Recheck** buttons     |
+| **Frontend**    | Status badge, version indicator, and “unsaved changes” dirty state                                  |
+| **Offline**     | `EMBEDDING_LOCAL_FILES_ONLY=true`; Ollama via httpx (`llm/client.py`, no `openai` package)          |
+| **Glossary**    | Deterministic rule-based scan by default (`GLOSSARY_USE_LLM=false`) for instant terminology checks  |
+| **Reliability** | Schema migrations run once per process (avoids Postgres deadlocks during parallel analyse)          |
 
 Editable officer drafts are stored as `gr_documents` rows with filenames like `draft-<uuid>-<name>.txt`. They are **excluded from corpus embedding drift checks** in `/health` (they are working copies, not retrieval targets).
 
@@ -789,11 +846,11 @@ draft  ──(Save & Recheck, zero high-severity findings)──▶  ready_for_a
 
 ### Audit log events
 
-| `action_type` | When |
-| ------------- | ---- |
-| `human_edit` | Text changed on save; includes unified `diff` + `finding_snapshot` |
-| `ai_suggestion` | Analysis run (initial analyse, save without text change, or save-and-recheck) |
-| `submitted_for_review` | Save & Recheck passed all gates → status set to `ready_for_approval` |
+| `action_type`          | When                                                                          |
+| ---------------------- | ----------------------------------------------------------------------------- |
+| `human_edit`           | Text changed on save; includes unified `diff` + `finding_snapshot`            |
+| `ai_suggestion`        | Analysis run (initial analyse, save without text change, or save-and-recheck) |
+| `submitted_for_review` | Save & Recheck passed all gates → status set to `ready_for_approval`          |
 
 `finding_snapshot` JSON includes `version_number`, `template_check`, `glossary_check`, and `conflict_check` (when run).
 
@@ -849,4 +906,3 @@ backend/
 ```
 
 Schema DDL lives in `database/schema.sql` and is applied idempotently via `database/db.py` on API startup (no Alembic — restart uvicorn after pulling schema changes).
-
