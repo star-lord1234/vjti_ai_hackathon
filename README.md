@@ -753,3 +753,100 @@ Interactive docs: `http://localhost:8000/docs`
 ```
 
 Or `{ "status": "unavailable", "reason": "llm_unavailable" }` / `{ "status": "no_document" }` / `{ "status": "error" }`.
+
+---
+
+## Phase 8 — Editable Drafts, Versioning & Audit Trail
+
+This phase adds a persisted draft workflow on top of the existing analyse UI: officers edit draft text explicitly, save versions, re-run checks, and every action is recorded in Postgres.
+
+### What was added
+
+| Area | Capability |
+| ---- | ---------- |
+| **Database** | `audit_log`, `gr_versions`, and `gr_documents.status` (`draft` · `ready_for_approval` · `approved`) |
+| **Backend** | `services/audit.py` — single `log_action()` helper (no scattered INSERTs) |
+| **Backend** | `services/draft.py` — save, save-and-recheck, diff computation, status transitions |
+| **API** | `POST /drafts`, `GET /drafts/{id}`, `POST /drafts/{id}/save`, `POST /drafts/{id}/save-and-recheck` |
+| **API** | `POST /reasoning/analyze` accepts optional `gr_document_id` + `actor` to log initial analysis |
+| **Frontend** | Editable textarea in review phase (no auto-save); **Save Draft** and **Save & Recheck** buttons |
+| **Frontend** | Status badge, version indicator, and “unsaved changes” dirty state |
+| **Offline** | `EMBEDDING_LOCAL_FILES_ONLY=true`; Ollama via httpx (`llm/client.py`, no `openai` package) |
+| **Glossary** | Deterministic rule-based scan by default (`GLOSSARY_USE_LLM=false`) for instant terminology checks |
+| **Reliability** | Schema migrations run once per process (avoids Postgres deadlocks during parallel analyse) |
+
+Editable officer drafts are stored as `gr_documents` rows with filenames like `draft-<uuid>-<name>.txt`. They are **excluded from corpus embedding drift checks** in `/health` (they are working copies, not retrieval targets).
+
+### Draft status lifecycle
+
+```
+draft  ──(Save & Recheck, zero high-severity findings)──▶  ready_for_approval  ──▶  approved
+  ▲                                                          │
+  └──────────────── issues remain ───────────────────────────┘
+```
+
+**Save & Recheck** implies a save when text changed; it does not require a prior **Save Draft** click.
+
+### Audit log events
+
+| `action_type` | When |
+| ------------- | ---- |
+| `human_edit` | Text changed on save; includes unified `diff` + `finding_snapshot` |
+| `ai_suggestion` | Analysis run (initial analyse, save without text change, or save-and-recheck) |
+| `submitted_for_review` | Save & Recheck passed all gates → status set to `ready_for_approval` |
+
+`finding_snapshot` JSON includes `version_number`, `template_check`, `glossary_check`, and `conflict_check` (when run).
+
+**Actor identity:** `actor` in request body or `X-Actor` header (default `anonymous officer`). In the browser: `localStorage.setItem('gr_actor', 'Officer Name')`.
+
+### Versioning rules
+
+- A new `gr_versions` row is created **only when text actually changes** (normalized line endings).
+- Repeated **Save Draft** or **Save & Recheck** without edits does **not** bump the version number.
+- Each explicit save with changes creates exactly one new version and one audit row (never per keystroke).
+
+### Frontend workflow (review phase)
+
+1. Upload / paste → draft persisted via `POST /drafts` → initial `POST /reasoning/analyze` (logged when draft ID is available).
+2. **Review** — edit draft in textarea; toggle **Preview** for highlighted read-only view.
+3. **Save Draft** — deterministic template + terminology checks only; status stays `draft`.
+4. **Save & Recheck** — above + LLM conflict detection; may promote to `ready_for_approval`.
+
+### Verify in Postgres
+
+```sql
+SELECT action_type, finding_snapshot->>'version_number' AS ver,
+       finding_snapshot ? 'conflict_check' AS has_conflict,
+       left(diff, 80) AS diff_preview, created_at
+FROM audit_log
+WHERE gr_document_id = <draft_id>
+ORDER BY id;
+
+SELECT version_number, left(full_text, 60), created_at
+FROM gr_versions
+WHERE gr_document_id = <draft_id>
+ORDER BY version_number;
+```
+
+### New env vars (see `.env.example`)
+
+```bash
+GLOSSARY_USE_LLM=false          # deterministic glossary (default)
+EMBEDDING_LOCAL_FILES_ONLY=true # offline conflict detection after first embed cache
+CONFLICT_TOP_K=5                # faster conflict checks
+CONFLICT_MAX_CONTEXT_CHARS=3500
+```
+
+### New backend modules
+
+```
+backend/
+├── services/
+│   ├── audit.py    # log_action()
+│   └── draft.py    # save_draft_version, save_and_recheck_draft, record_ai_analysis
+└── api/routes/
+    └── drafts.py   # /drafts endpoints
+```
+
+Schema DDL lives in `database/schema.sql` and is applied idempotently via `database/db.py` on API startup (no Alembic — restart uvicorn after pulling schema changes).
+
