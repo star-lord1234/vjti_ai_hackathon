@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from openai import APIConnectionError, APITimeoutError, RateLimitError
+import httpx
 from tqdm import tqdm
 from pydantic import ValidationError
 
@@ -431,35 +431,29 @@ def llm_extract_missing(text, missing_fields, filename, retries=5):
 
             return {k: data.get(k) for k in missing_fields if k in data}
 
-        except RateLimitError as e:
-
-            retry_after, is_daily = parse_retry_after(e)
-            kind = "daily quota" if is_daily else "rate limit"
-            print(f"{kind} on key {idx + 1} (~{retry_after:.0f}s)")
-
-            api_manager.mark_rate_limited(
-                idx,
-                retry_after,
-                all_keys=True,
-            )
-
-            rate_limit_rounds += 1
-
-            if is_daily and retry_after >= 45:
-                _tpd_block_event.set()
-                log_failure(
-                    filename,
-                    f"Daily quota hit (retry_after={retry_after:.1f}s). Re-run later to resume.",
-                )
-                return None
-
-            if rate_limit_rounds >= 20:
-                log_failure(
-                    filename,
-                    f"Too many rate limits (retry_after={retry_after:.1f}s).",
-                )
-                return None
-
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                retry_after, is_daily = parse_retry_after(e)
+                kind = "daily quota" if is_daily else "rate limit"
+                print(f"{kind} on LLM (~{retry_after:.0f}s)")
+                api_manager.mark_rate_limited(idx, retry_after, all_keys=True)
+                rate_limit_rounds += 1
+                if is_daily and retry_after >= 45:
+                    _tpd_block_event.set()
+                    log_failure(
+                        filename,
+                        f"Daily quota hit (retry_after={retry_after:.1f}s). Re-run later to resume.",
+                    )
+                    return None
+                if rate_limit_rounds >= 20:
+                    log_failure(
+                        filename,
+                        f"Too many rate limits (retry_after={retry_after:.1f}s).",
+                    )
+                    return None
+                continue
+            attempt += 1
+            time.sleep(min(2 ** attempt, 20))
             continue
 
         except ValidationError as e:
@@ -470,7 +464,7 @@ def llm_extract_missing(text, missing_fields, filename, retries=5):
             time.sleep(0.3)
             continue
 
-        except (APIConnectionError, APITimeoutError):
+        except (httpx.ConnectError, httpx.TimeoutException):
             print("Network issue")
             attempt += 1
             time.sleep(min(2 ** attempt, 20))

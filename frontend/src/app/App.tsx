@@ -32,16 +32,24 @@ import {
   FileCode,
   Languages,
   LayoutTemplate,
+  Save,
+  Pencil,
 } from "lucide-react";
 import { DraftChatWidget } from "./components/DraftChatWidget";
 import maharashtraSeal from "./components/figma/Seal_of_Maharashtra.svg";
 import {
   checkHealth,
   analyzeDraft,
+  createDraft,
+  saveDraft,
+  saveAndRecheckDraft,
   ConflictFinding,
   GlossaryCheckSection,
   GlossaryFinding,
   DraftAnalysisResponse,
+  DraftSaveResponse,
+  DraftRecheckResponse,
+  DraftStatus,
   TemplateCheckSection,
   ApiError,
 } from "../lib/api";
@@ -64,6 +72,75 @@ import {
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Phase = "upload" | "processing" | "review";
+
+// ─── Draft status badge ───────────────────────────────────────────────────────
+
+const DRAFT_STATUS_LABELS: Record<DraftStatus, string> = {
+  draft: "Draft",
+  ready_for_approval: "Ready for approval",
+  approved: "Approved",
+};
+
+function DraftStatusBadge({ status }: { status: DraftStatus }) {
+  const styles: Record<DraftStatus, string> = {
+    draft: "bg-[#F3F4F6] text-[#374151] border-[#E5E7EB]",
+    ready_for_approval: "bg-green-50 text-green-700 border-green-200",
+    approved: "bg-blue-50 text-blue-700 border-blue-200",
+  };
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[11px] font-semibold uppercase tracking-wide ${styles[status]}`}
+    >
+      {DRAFT_STATUS_LABELS[status]}
+    </span>
+  );
+}
+
+// ─── Draft editor (explicit save workflow) ────────────────────────────────────
+
+function DraftEditor({
+  value,
+  onChange,
+  isPreview,
+  draftText,
+  highlightedFinding,
+  zoom,
+  scrollTarget,
+  scrollKey,
+}: {
+  value: string;
+  onChange: (text: string) => void;
+  isPreview: boolean;
+  draftText: string;
+  highlightedFinding: HighlightableFinding | null;
+  zoom: number;
+  scrollTarget?: string | number;
+  scrollKey?: number;
+}) {
+  if (isPreview) {
+    return (
+      <DocumentViewer
+        draftText={draftText}
+        highlightedFinding={highlightedFinding}
+        zoom={zoom}
+        scrollTarget={scrollTarget}
+        scrollKey={scrollKey}
+      />
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-hidden bg-[#F8FAFC] p-4">
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full h-full min-h-[calc(100vh-220px)] resize-none rounded-xl border border-[#E5E7EB] bg-white p-6 text-sm leading-relaxed text-[#111827] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/30 font-mono"
+        spellCheck={false}
+        aria-label="Editable draft text"
+      />
+    </div>
+  );
+}
 
 // ─── Default Document Fallback (review UI only when draft is empty) ─────────
 
@@ -1221,11 +1298,13 @@ function TerminologyPanel({
 function ProcessingView({
   draftText,
   fileName,
+  draftDocumentId,
   onComplete,
   onError,
 }: {
   draftText: string;
   fileName: string;
+  draftDocumentId: number | null;
   onComplete: (result: DraftAnalysisResponse) => void;
   onError: () => void;
 }) {
@@ -1240,7 +1319,9 @@ function ProcessingView({
     setCurrentStep(0);
     setDone(false);
 
-    analyzeDraft(draftText)
+    analyzeDraft(draftText, {
+      grDocumentId: draftDocumentId ?? undefined,
+    })
       .then((result) => {
         setAnalysisResult(result);
         setCurrentStep(PROCESSING_STEPS.length - 1);
@@ -1249,7 +1330,7 @@ function ProcessingView({
       .catch((err: ApiError | Error) => {
         setErrorMsg(err.message || "Failed to connect to the analysis API.");
       });
-  }, [draftText]);
+  }, [draftText, draftDocumentId]);
 
   useEffect(() => {
     runAnalysis();
@@ -1879,10 +1960,22 @@ export default function App() {
   const [conflictResult, setConflictResult] = useState<ConflictFinding | null>(
     null,
   );
+  const [conflictErrorReason, setConflictErrorReason] = useState<string | null>(
+    null,
+  );
   const [glossaryCheck, setGlossaryCheck] =
     useState<GlossaryCheckSection | null>(null);
   const [templateCheck, setTemplateCheck] =
     useState<TemplateCheckSection | null>(null);
+  const [draftDocumentId, setDraftDocumentId] = useState<number | null>(null);
+  const [draftStatus, setDraftStatus] = useState<DraftStatus>("draft");
+  const [draftVersionNumber, setDraftVersionNumber] = useState(1);
+  const [editedDraftText, setEditedDraftText] = useState("");
+  const [savedDraftText, setSavedDraftText] = useState("");
+  const [isDirty, setIsDirty] = useState(false);
+  const [isPreviewMode, setIsPreviewMode] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isRechecking, setIsRechecking] = useState(false);
   const [reviewPanel, setReviewPanel] = useState<
     "conflicts" | "terminology" | "template"
   >("conflicts");
@@ -1953,10 +2046,104 @@ export default function App() {
     setToast(msg);
   };
 
-  const handleStartUpload = (text: string, name: string) => {
+  const handleStartUpload = async (text: string, name: string) => {
     setDraftText(text);
+    setEditedDraftText(text);
+    setSavedDraftText(text);
     setFileName(name);
-    setPhase("processing");
+    setIsDirty(false);
+    setDraftDocumentId(null);
+    setDraftStatus("draft");
+    setDraftVersionNumber(1);
+    setIsPreviewMode(false);
+
+    try {
+      const draft = await createDraft(text, name);
+      setDraftDocumentId(draft.id);
+      setDraftStatus(draft.status);
+      setDraftVersionNumber(draft.version_number);
+      setSavedDraftText(draft.full_text);
+      setPhase("processing");
+    } catch (err: unknown) {
+      const msg =
+        err instanceof ApiError ? err.message : "Draft could not be persisted";
+      showToast(msg);
+      setPhase("upload");
+    }
+  };
+
+  const applyDeterministicResults = (response: DraftSaveResponse) => {
+    setGlossaryCheck(response.glossary_check);
+    setTemplateCheck(response.template_check);
+    setDraftStatus(response.draft.status);
+    setDraftVersionNumber(response.draft.version_number);
+    setSavedDraftText(response.draft.full_text);
+    setDraftText(response.draft.full_text);
+    setEditedDraftText(response.draft.full_text);
+    setIsDirty(false);
+  };
+
+  const applyRecheckResults = (response: DraftRecheckResponse) => {
+    applyDeterministicResults(response);
+    if (
+      response.conflict_check.status === "ok" &&
+      response.conflict_check.result
+    ) {
+      setConflictResult(response.conflict_check.result);
+      setConflictErrorReason(null);
+    } else {
+      setConflictResult(null);
+      setConflictErrorReason(response.conflict_check.reason ?? null);
+    }
+  };
+
+  const handleEditedDraftChange = (text: string) => {
+    setEditedDraftText(text);
+    setIsDirty(text !== savedDraftText);
+  };
+
+  const handleSaveDraft = async () => {
+    if (!draftDocumentId) {
+      showToast("Draft is still being created — try again in a moment.");
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const response = await saveDraft(draftDocumentId, editedDraftText);
+      applyDeterministicResults(response);
+      showToast("Draft saved");
+    } catch (err: unknown) {
+      const msg = err instanceof ApiError ? err.message : "Save failed";
+      showToast(msg);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSaveAndRecheck = async () => {
+    if (!draftDocumentId) {
+      showToast("Draft is still being created — try again in a moment.");
+      return;
+    }
+    setIsRechecking(true);
+    try {
+      const response = await saveAndRecheckDraft(
+        draftDocumentId,
+        editedDraftText,
+      );
+      applyRecheckResults(response);
+      setReviewPanel("conflicts");
+      showToast(
+        response.draft.status === "ready_for_approval"
+          ? "Recheck complete — ready for approval"
+          : "Recheck complete — issues remain",
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof ApiError ? err.message : "Recheck failed";
+      showToast(msg);
+    } finally {
+      setIsRechecking(false);
+    }
   };
 
   const handleProcessingComplete = (analysis: DraftAnalysisResponse) => {
@@ -1965,11 +2152,16 @@ export default function App() {
       analysis.conflict_check.result
     ) {
       setConflictResult(analysis.conflict_check.result);
+      setConflictErrorReason(null);
     } else {
       setConflictResult(null);
+      setConflictErrorReason(analysis.conflict_check.reason ?? null);
     }
     setGlossaryCheck(analysis.glossary_check);
     setTemplateCheck(analysis.template_check);
+    setEditedDraftText(draftText);
+    setSavedDraftText(draftText);
+    setIsDirty(false);
     setReviewPanel("conflicts");
     setPhase("review");
     showToast("Draft analysis complete");
@@ -2240,6 +2432,14 @@ export default function App() {
                   setPhase("upload");
                   setSelectedFinding(null);
                   setConflictResult(null);
+                  setConflictErrorReason(null);
+                  setDraftDocumentId(null);
+                  setDraftStatus("draft");
+                  setDraftVersionNumber(1);
+                  setEditedDraftText("");
+                  setSavedDraftText("");
+                  setIsDirty(false);
+                  setIsPreviewMode(false);
                   setFilterSeverity("all");
                 }}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E5E7EB] text-xs font-semibold text-[#374151] hover:bg-[#F9FAFB] transition-colors"
@@ -2333,6 +2533,7 @@ export default function App() {
         <ProcessingView
           draftText={draftText}
           fileName={fileName}
+          draftDocumentId={draftDocumentId}
           onComplete={handleProcessingComplete}
           onError={() => setPhase("upload")}
         />
@@ -2354,13 +2555,27 @@ export default function App() {
           )}
           {/* File breadcrumb */}
           <div className="bg-white border-b border-[#E5E7EB] px-6 py-2.5 flex items-center gap-3 flex-shrink-0">
-            <div className="flex items-center gap-2 text-xs text-[#6B7280]">
+            <div className="flex items-center gap-2 text-xs text-[#6B7280] flex-wrap">
               <FileText size={12} className="text-[#9CA3AF]" />
               <span className="font-medium text-[#374151] font-mono">
                 {fileName}
               </span>
               <span className="text-[#D1D5DB]">·</span>
-              <span>{draftText.length} characters</span>
+              <span>{editedDraftText.length} characters</span>
+              <span className="text-[#D1D5DB]">·</span>
+              <DraftStatusBadge status={draftStatus} />
+              <span className="text-[#D1D5DB]">·</span>
+              <span className="font-medium text-[#374151]">
+                Version {draftVersionNumber}
+              </span>
+              {isDirty && (
+                <>
+                  <span className="text-[#D1D5DB]">·</span>
+                  <span className="text-amber-600 font-medium">
+                    Unsaved changes
+                  </span>
+                </>
+              )}
               <span className="text-[#D1D5DB]">·</span>
               <span className="text-[#22C55E] font-medium flex items-center gap-1">
                 <CheckCircle2 size={11} />
@@ -2435,22 +2650,74 @@ export default function App() {
                   />
                 </div>
 
-                <div className="ml-auto">
+                <div className="ml-auto flex items-center gap-2">
+                  <button
+                    onClick={() => setIsPreviewMode((v) => !v)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                      isPreviewMode
+                        ? "bg-white/15 text-white"
+                        : "text-[#C4C9D4] hover:bg-white/10 hover:text-white"
+                    }`}
+                    title={isPreviewMode ? "Switch to edit mode" : "Preview with highlights"}
+                  >
+                    {isPreviewMode ? (
+                      <>
+                        <Pencil size={12} />
+                        Edit
+                      </>
+                    ) : (
+                      <>
+                        <Eye size={12} />
+                        Preview
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={handleSaveDraft}
+                    disabled={isSaving || isRechecking || !draftDocumentId}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-white/10 text-white hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {isSaving ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <Save size={12} />
+                    )}
+                    Save Draft
+                  </button>
+
+                  <button
+                    onClick={handleSaveAndRecheck}
+                    disabled={isSaving || isRechecking || !draftDocumentId}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#2563EB] text-white hover:bg-[#1D4ED8] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    title="Saves your edits, then runs full conflict recheck"
+                  >
+                    {isRechecking ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <RefreshCw size={12} />
+                    )}
+                    Save & Recheck
+                  </button>
+
                   {selectedFinding ? (
-                    <span className="flex items-center gap-1.5 text-xs font-medium text-amber-400">
+                    <span className="flex items-center gap-1.5 text-xs font-medium text-amber-400 ml-1">
                       <AlertTriangle size={12} />
                       Highlighting {selectedFinding.clauseNumber}
                     </span>
                   ) : (
-                    <span className="text-xs text-[#6B7280]">
+                    <span className="text-xs text-[#6B7280] ml-1">
                       Select a finding to inspect
                     </span>
                   )}
                 </div>
               </div>
 
-              <DocumentViewer
-                draftText={draftText}
+              <DraftEditor
+                value={editedDraftText}
+                onChange={handleEditedDraftChange}
+                isPreview={isPreviewMode}
+                draftText={editedDraftText}
                 highlightedFinding={
                   selectedFinding
                     ? {
@@ -2640,6 +2907,11 @@ export default function App() {
                       Conflict detection could not be completed. Terminology
                       results may still be available in the Terminology tab.
                     </p>
+                    {conflictErrorReason && (
+                      <p className="mt-2 text-xs text-red-600/90 leading-relaxed">
+                        {conflictErrorReason}
+                      </p>
+                    )}
                   </div>
                 ) : conflictResult && !conflictResult.conflicting ? (
                   <div className="text-center py-12 px-4 bg-white rounded-2xl border border-green-200">
@@ -2706,8 +2978,8 @@ export default function App() {
       {toast && <Toast message={toast} onDone={() => setToast(null)} />}
 
       <DraftChatWidget
-        draftText={draftText}
-        documentKey={`${fileName}::${draftText.length}::${draftText.slice(0, 128)}`}
+        draftText={phase === "review" ? editedDraftText : draftText}
+        documentKey={`${fileName}::${phase === "review" ? editedDraftText.length : draftText.length}::${(phase === "review" ? editedDraftText : draftText).slice(0, 128)}`}
       />
     </div>
   );

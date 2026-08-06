@@ -27,6 +27,7 @@ configure_offline_mode()
 from database.db import Database
 from embeddings.search import build_draft_query_segments
 from reasoning.context_builder import build_context_block
+from reasoning.json_utils import extract_json_object
 from reasoning.clause_parser import extract_draft_clauses, format_clauses_for_prompt
 from reasoning.models import (
     ComparisonResult,
@@ -68,9 +69,10 @@ from llm.manager import LLMClientManager
 
 REASONING_MODEL = default_reasoning_model()
 DEFAULT_MAX_FULL_TEXT = int(os.getenv("REASONING_MAX_FULL_TEXT_DOCS", "8"))
-CONFLICT_MAX_FULL_TEXT = int(os.getenv("CONFLICT_MAX_FULL_TEXT_DOCS", "5"))
-CONFLICT_TOP_K = int(os.getenv("CONFLICT_TOP_K", "10"))
-MAX_LLM_RETRIES = int(os.getenv("REASONING_MAX_RETRIES", "2"))
+CONFLICT_MAX_FULL_TEXT = int(os.getenv("CONFLICT_MAX_FULL_TEXT_DOCS", "3"))
+CONFLICT_TOP_K = int(os.getenv("CONFLICT_TOP_K", "5"))
+CONFLICT_MAX_TOKENS = int(os.getenv("CONFLICT_MAX_TOKENS", "768"))
+MAX_LLM_RETRIES = int(os.getenv("REASONING_MAX_RETRIES", "1"))
 
 _api_manager: Optional[LLMClientManager] = None
 
@@ -117,17 +119,6 @@ def resolve_draft_text(draft_input: str) -> str:
         pass
 
     return draft_input
-
-
-def _clean_json_text(text: str) -> str:
-    cleaned = text.strip()
-    if cleaned.startswith("```json"):
-        cleaned = cleaned[7:]
-    elif cleaned.startswith("```"):
-        cleaned = cleaned[3:]
-    if cleaned.endswith("```"):
-        cleaned = cleaned[:-3]
-    return cleaned.strip()
 
 
 def _fallback_models() -> list[str]:
@@ -207,10 +198,12 @@ def _call_llm_json(
                         ],
                         temperature=REASONING_TEMPERATURE,
                         response_format={"type": "json_object"},
-                        max_tokens=1024,
+                        max_tokens=CONFLICT_MAX_TOKENS,
                     )
                     raw_text = completion.choices[0].message.content or ""
-                    parsed_dict = json.loads(_clean_json_text(raw_text))
+                    if not raw_text.strip():
+                        raise ValueError("LLM returned empty content")
+                    parsed_dict = extract_json_object(raw_text)
                     return model_cls.model_validate(parsed_dict)
 
                 except Exception as e:

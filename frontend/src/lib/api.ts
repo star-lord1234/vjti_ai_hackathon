@@ -228,13 +228,19 @@ export async function checkConflict(
  */
 export async function analyzeDraft(
   draftText: string,
-  opts?: { topK?: number; hops?: number }
+  opts?: { topK?: number; hops?: number; grDocumentId?: number; actor?: string },
 ): Promise<DraftAnalysisResponse> {
-  const payload = {
+  const payload: Record<string, unknown> = {
     draft_text: draftText,
-    top_k: opts?.topK ?? 15,
-    hops: opts?.hops ?? 1,
+    top_k: opts?.topK ?? 5,
+    hops: opts?.hops ?? 0,
   };
+  if (opts?.grDocumentId != null) {
+    payload.gr_document_id = opts.grDocumentId;
+  }
+  if (opts?.actor) {
+    payload.actor = opts.actor;
+  }
 
   try {
     const res = await fetch(`${API_BASE_URL}/reasoning/analyze`, {
@@ -262,6 +268,118 @@ export async function analyzeDraft(
     if (err instanceof ApiError) throw err;
     throw new ApiError(0, err instanceof Error ? err.message : "Network error calling analyze API");
   }
+}
+
+export type DraftStatus = "draft" | "ready_for_approval" | "approved";
+
+export interface DraftSummary {
+  id: number;
+  filename: string;
+  status: DraftStatus;
+  version_number: number;
+  full_text: string;
+}
+
+export interface DraftSaveResponse {
+  draft: DraftSummary;
+  template_check: TemplateCheckSection;
+  glossary_check: GlossaryCheckSection;
+}
+
+export interface DraftRecheckResponse extends DraftSaveResponse {
+  conflict_check: ConflictCheckSection;
+}
+
+const DEFAULT_ACTOR =
+  (typeof localStorage !== "undefined" &&
+    localStorage.getItem("gr_actor")) ||
+  "anonymous officer";
+
+function draftHeaders(actor?: string): HeadersInit {
+  const resolved = actor?.trim() || DEFAULT_ACTOR;
+  return {
+    "Content-Type": "application/json",
+    "X-Actor": resolved,
+  };
+}
+
+export async function createDraft(
+  fullText: string,
+  filename: string,
+  actor?: string,
+): Promise<DraftSummary> {
+  const res = await fetch(`${API_BASE_URL}/drafts`, {
+    method: "POST",
+    headers: draftHeaders(actor),
+    body: JSON.stringify({
+      full_text: fullText,
+      filename,
+      actor: actor || DEFAULT_ACTOR,
+    }),
+  });
+  if (!res.ok) {
+    let errDetail = `API error ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body.detail) errDetail = body.detail;
+    } catch {
+      // ignore
+    }
+    throw new ApiError(res.status, errDetail);
+  }
+  return await res.json();
+}
+
+export async function saveDraft(
+  draftId: number,
+  fullText: string,
+  actor?: string,
+): Promise<DraftSaveResponse> {
+  const res = await fetch(`${API_BASE_URL}/drafts/${draftId}/save`, {
+    method: "POST",
+    headers: draftHeaders(actor),
+    body: JSON.stringify({
+      full_text: fullText,
+      actor: actor || DEFAULT_ACTOR,
+    }),
+  });
+  if (!res.ok) {
+    let errDetail = `API error ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body.detail) errDetail = body.detail;
+    } catch {
+      // ignore
+    }
+    throw new ApiError(res.status, errDetail);
+  }
+  return await res.json();
+}
+
+export async function saveAndRecheckDraft(
+  draftId: number,
+  fullText: string,
+  actor?: string,
+): Promise<DraftRecheckResponse> {
+  const res = await fetch(`${API_BASE_URL}/drafts/${draftId}/save-and-recheck`, {
+    method: "POST",
+    headers: draftHeaders(actor),
+    body: JSON.stringify({
+      full_text: fullText,
+      actor: actor || DEFAULT_ACTOR,
+    }),
+  });
+  if (!res.ok) {
+    let errDetail = `API error ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body.detail) errDetail = body.detail;
+    } catch {
+      // ignore
+    }
+    throw new ApiError(res.status, errDetail);
+  }
+  return await res.json();
 }
 
 export interface ChatHistoryMessage {

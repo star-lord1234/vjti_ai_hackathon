@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Optional, Type, TypeVar
@@ -19,6 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from reasoning.glossary.exceptions import GlossaryCheckUnavailable
+from reasoning.json_utils import extract_json_object
 from reasoning.glossary.loader import get_glossary_for_prompt, GLOSSARY_ENTRIES
 from reasoning.glossary.models import GlossaryCheckSection, GlossaryFinding, GlossaryLLMOutput
 from reasoning.llm_reasoner import get_llm_manager
@@ -37,9 +39,10 @@ logger = logging.getLogger(__name__)
 from llm.config import default_reasoning_model
 
 GLOSSARY_MODEL = os.getenv("GLOSSARY_MODEL", default_reasoning_model())
-GLOSSARY_MAX_DRAFT_CHARS = int(os.getenv("GLOSSARY_MAX_DRAFT_CHARS", "6000"))
+GLOSSARY_USE_LLM = os.getenv("GLOSSARY_USE_LLM", "false").lower() in ("1", "true", "yes")
+GLOSSARY_MAX_DRAFT_CHARS = int(os.getenv("GLOSSARY_MAX_DRAFT_CHARS", "4000"))
 GLOSSARY_MAX_RETRIES = int(os.getenv("GLOSSARY_MAX_RETRIES", "1"))
-GLOSSARY_MAX_TOKENS = int(os.getenv("GLOSSARY_MAX_TOKENS", "1536"))
+GLOSSARY_MAX_TOKENS = int(os.getenv("GLOSSARY_MAX_TOKENS", "768"))
 
 GLOSSARY_OUTPUT_SCHEMA = (
     '{"findings":[{"text_found":str,"context_snippet":str,'
@@ -75,6 +78,63 @@ def _is_glossary_term(text: str) -> bool:
             if norm_cand and (norm_text == norm_cand or norm_text in norm_cand or norm_cand in norm_text):
                 return True
     return False
+
+
+def _context_snippet(draft_text: str, start: int, end: int) -> str:
+    pad = 45
+    snippet_start = max(0, start - pad)
+    snippet_end = min(len(draft_text), end + pad)
+    return draft_text[snippet_start:snippet_end].replace("\n", " ").strip()
+
+
+def _find_variant_positions(draft_text: str, variant: str) -> list[tuple[int, int]]:
+    """Return non-overlapping (start, end) spans for a glossary variant."""
+    if not variant or len(variant.strip()) < 2:
+        return []
+
+    positions: list[tuple[int, int]] = []
+    if variant.isascii():
+        pattern = re.compile(re.escape(variant), re.IGNORECASE)
+        for match in pattern.finditer(draft_text):
+            positions.append((match.start(), match.end()))
+        return positions
+
+    start = 0
+    while True:
+        pos = draft_text.find(variant, start)
+        if pos < 0:
+            break
+        positions.append((pos, pos + len(variant)))
+        start = pos + len(variant)
+    return positions
+
+
+def _scan_glossary_deterministic(draft_text: str) -> list[GlossaryFinding]:
+    """Fast rule-based glossary scan — no LLM round-trip."""
+    findings: list[GlossaryFinding] = []
+
+    for entry in GLOSSARY_ENTRIES:
+        canonical = entry.canonical_mr or entry.canonical_en or entry.id
+        for variant in entry.variants:
+            norm_variant = _normalize_term(variant)
+            norm_canonical = _normalize_term(canonical)
+            if not norm_variant or norm_variant == norm_canonical:
+                continue
+
+            for start, end in _find_variant_positions(draft_text, variant):
+                text_found = draft_text[start:end]
+                findings.append(
+                    GlossaryFinding(
+                        text_found=text_found,
+                        context_snippet=_context_snippet(draft_text, start, end),
+                        canonical_term=canonical,
+                        reason=entry.context_note
+                        or f"Use canonical term '{canonical}' instead of '{text_found}'.",
+                        confidence=0.9,
+                    )
+                )
+
+    return _postfilter_glossary_findings(findings)
 
 
 def _postfilter_glossary_findings(findings: list) -> list:
@@ -133,17 +193,6 @@ Return ONLY valid JSON matching this schema:
 T = TypeVar("T", bound=BaseModel)
 
 
-def _clean_json_text(text: str) -> str:
-    cleaned = text.strip()
-    if cleaned.startswith("```json"):
-        cleaned = cleaned[7:]
-    elif cleaned.startswith("```"):
-        cleaned = cleaned[3:]
-    if cleaned.endswith("```"):
-        cleaned = cleaned[:-3]
-    return cleaned.strip()
-
-
 def _require_available_client(api_mgr: LLMClientManager) -> tuple[int, object]:
     """Fail fast when the LLM client is cooling down."""
     idx, client = api_mgr.get_client()
@@ -190,7 +239,9 @@ def _call_glossary_llm_json(
                 max_tokens=GLOSSARY_MAX_TOKENS,
             )
             raw_text = completion.choices[0].message.content or ""
-            parsed_dict = json.loads(_clean_json_text(raw_text))
+            if not raw_text.strip():
+                raise ValueError("LLM returned empty content")
+            parsed_dict = extract_json_object(raw_text)
             return model_cls.model_validate(parsed_dict)
 
         except GlossaryCheckUnavailable:
@@ -218,7 +269,9 @@ def _call_glossary_llm_json(
                         max_tokens=GLOSSARY_MAX_TOKENS,
                     )
                     raw_text = completion.choices[0].message.content or ""
-                    parsed_dict = json.loads(_clean_json_text(raw_text))
+                    if not raw_text.strip():
+                        raise ValueError("LLM returned empty content")
+                    parsed_dict = extract_json_object(raw_text)
                     return model_cls.model_validate(parsed_dict)
                 except GlossaryCheckUnavailable:
                     raise
@@ -258,6 +311,11 @@ def run_glossary_check(draft_text: str) -> GlossaryCheckSection:
     """
     if not draft_text.strip():
         return GlossaryCheckSection(status="ok", findings=[])
+
+    if not GLOSSARY_USE_LLM:
+        findings = _scan_glossary_deterministic(draft_text)
+        logger.info("Glossary deterministic scan: %s findings.", len(findings))
+        return GlossaryCheckSection(status="ok", findings=findings)
 
     system_prompt = _SYSTEM_PROMPT.format(schema=GLOSSARY_OUTPUT_SCHEMA)
     user_prompt = _build_user_prompt(draft_text)

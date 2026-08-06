@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import threading
 from pathlib import Path
 
 import psycopg
@@ -9,6 +10,9 @@ import psycopg
 VECTOR_DIM = int(os.getenv("VECTOR_DIM", "768"))
 HNSW_M = int(os.getenv("HNSW_M", "16"))
 HNSW_EF_CONSTRUCTION = int(os.getenv("HNSW_EF_CONSTRUCTION", "64"))
+
+_schema_lock = threading.Lock()
+_schema_initialized = False
 
 
 class Database:
@@ -41,6 +45,20 @@ class Database:
 
     def ensure_schema(self):
         """Create table / add columns / indexes needed for JSON ingest and embeddings."""
+        global _schema_initialized
+
+        if _schema_initialized:
+            return
+
+        with _schema_lock:
+            if _schema_initialized:
+                return
+
+            self._apply_schema_migrations()
+            _schema_initialized = True
+
+    def _apply_schema_migrations(self):
+        """Run idempotent DDL once per process (avoids concurrent migration deadlocks)."""
 
         self.cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
 
@@ -95,6 +113,64 @@ class Database:
             CREATE INDEX IF NOT EXISTS gr_chunks_embedding_hnsw_idx
             ON gr_chunks USING hnsw (embedding vector_cosine_ops)
             WITH (m = {HNSW_M}, ef_construction = {HNSW_EF_CONSTRUCTION})
+            """
+        )
+
+        self.cur.execute(
+            """
+            ALTER TABLE gr_documents
+            ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'draft'
+            """
+        )
+
+        self.cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id BIGSERIAL PRIMARY KEY,
+                gr_document_id BIGINT REFERENCES gr_documents(id) ON DELETE CASCADE,
+                actor VARCHAR NOT NULL,
+                action_type VARCHAR NOT NULL,
+                finding_snapshot JSONB,
+                diff TEXT,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+            """
+        )
+
+        self.cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_audit_log_gr_document_id
+            ON audit_log(gr_document_id)
+            """
+        )
+
+        self.cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS gr_versions (
+                id BIGSERIAL PRIMARY KEY,
+                gr_document_id BIGINT REFERENCES gr_documents(id) ON DELETE CASCADE,
+                version_number INT NOT NULL,
+                full_text TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                UNIQUE (gr_document_id, version_number)
+            )
+            """
+        )
+
+        self.cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_gr_versions_gr_document_id
+            ON gr_versions(gr_document_id)
+            """
+        )
+
+        # Corpus rows should not inherit editable-draft workflow status.
+        self.cur.execute(
+            """
+            UPDATE gr_documents
+            SET status = NULL
+            WHERE filename NOT LIKE 'draft-%'
+              AND status = 'draft'
             """
         )
 
@@ -328,13 +404,16 @@ class Database:
         query = """
         SELECT id, filename, gr_number_canonical, department, subject_mr, ocr_text
         FROM gr_documents
+        WHERE filename NOT LIKE 'draft-%'
         """
         if only_missing:
             query += """
-            WHERE embedding IS NULL
-               OR NOT EXISTS (
-                   SELECT 1 FROM gr_chunks c WHERE c.document_id = gr_documents.id
-               )
+              AND (
+                embedding IS NULL
+                OR NOT EXISTS (
+                    SELECT 1 FROM gr_chunks c WHERE c.document_id = gr_documents.id
+                )
+              )
             """
         query += " ORDER BY id"
 
@@ -476,7 +555,7 @@ class Database:
             SELECT id, filename, document_type, document_type_en, department,
                    gr_number_original, gr_number_normalized, gr_number_canonical,
                    department_code, year, file_number, subfile_number, section,
-                   gr_date, subject_mr, citations, ocr_text
+                   gr_date, subject_mr, citations, ocr_text, status
             FROM gr_documents
             WHERE id = %s
             """,
@@ -550,6 +629,122 @@ class Database:
             "page": page,
             "page_size": page_size,
         }
+
+    def create_draft_document(
+        self,
+        filename: str,
+        full_text: str,
+        *,
+        subject_mr: str | None = None,
+        commit: bool = True,
+    ) -> int:
+        """Insert a new editable draft row and initial version 1."""
+        self.cur.execute(
+            """
+            INSERT INTO gr_documents (filename, subject_mr, ocr_text, status)
+            VALUES (%s, %s, %s, 'draft')
+            RETURNING id
+            """,
+            (filename, subject_mr, full_text),
+        )
+        doc_id = int(self.cur.fetchone()[0])
+        self.cur.execute(
+            """
+            INSERT INTO gr_versions (gr_document_id, version_number, full_text)
+            VALUES (%s, 1, %s)
+            """,
+            (doc_id, full_text),
+        )
+        if commit:
+            self.conn.commit()
+        return doc_id
+
+    def get_draft_document(self, gr_document_id: int):
+        """Fetch draft metadata including status and latest version number."""
+        self.cur.execute(
+            """
+            SELECT d.id, d.filename, d.status, d.subject_mr, d.ocr_text,
+                   COALESCE(v.version_number, 1) AS version_number,
+                   COALESCE(v.full_text, d.ocr_text, '') AS full_text
+            FROM gr_documents d
+            LEFT JOIN LATERAL (
+                SELECT version_number, full_text
+                FROM gr_versions
+                WHERE gr_document_id = d.id
+                ORDER BY version_number DESC
+                LIMIT 1
+            ) v ON TRUE
+            WHERE d.id = %s
+            """,
+            (gr_document_id,),
+        )
+        row = self.cur.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in self.cur.description]
+        return dict(zip(cols, row))
+
+    def get_latest_version_text(self, gr_document_id: int) -> str | None:
+        self.cur.execute(
+            """
+            SELECT full_text
+            FROM gr_versions
+            WHERE gr_document_id = %s
+            ORDER BY version_number DESC
+            LIMIT 1
+            """,
+            (gr_document_id,),
+        )
+        row = self.cur.fetchone()
+        return row[0] if row else None
+
+    def get_next_version_number(self, gr_document_id: int) -> int:
+        self.cur.execute(
+            """
+            SELECT COALESCE(MAX(version_number), 0) + 1
+            FROM gr_versions
+            WHERE gr_document_id = %s
+            """,
+            (gr_document_id,),
+        )
+        return int(self.cur.fetchone()[0])
+
+    def insert_gr_version(
+        self,
+        gr_document_id: int,
+        version_number: int,
+        full_text: str,
+        *,
+        commit: bool = False,
+    ) -> None:
+        self.cur.execute(
+            """
+            INSERT INTO gr_versions (gr_document_id, version_number, full_text)
+            VALUES (%s, %s, %s)
+            """,
+            (gr_document_id, version_number, full_text),
+        )
+        if commit:
+            self.conn.commit()
+
+    def update_draft_text_and_status(
+        self,
+        gr_document_id: int,
+        full_text: str,
+        status: str,
+        *,
+        commit: bool = False,
+    ) -> None:
+        self.cur.execute(
+            """
+            UPDATE gr_documents
+            SET ocr_text = %s, status = %s
+            WHERE id = %s
+            """,
+            (full_text, status, gr_document_id),
+        )
+        if commit:
+            self.conn.commit()
 
     def close(self):
         self.cur.close()

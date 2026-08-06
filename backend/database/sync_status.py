@@ -17,6 +17,9 @@ from database.db import Database
 
 SYNC_TOLERANCE = float(os.getenv("STORE_SYNC_TOLERANCE", "0.10"))
 
+# Editable officer drafts are stored in gr_documents but are not corpus retrieval targets.
+_CORPUS_EMBED_EXCLUDE = "filename NOT LIKE 'draft-%'"
+
 
 def check_store_sync(db: Optional[Database] = None) -> Dict[str, Any]:
     """
@@ -45,10 +48,11 @@ def check_store_sync(db: Optional[Database] = None) -> Dict[str, Any]:
         missing_embeddings = int(database.cur.fetchone()[0])
 
         database.cur.execute(
-            """
+            f"""
             SELECT COUNT(*) FROM gr_documents d
             WHERE d.ocr_text IS NOT NULL AND length(trim(d.ocr_text)) > 50
               AND d.embedding IS NULL
+              AND {_CORPUS_EMBED_EXCLUDE}
             """
         )
         ocr_without_embed = int(database.cur.fetchone()[0])
@@ -56,10 +60,11 @@ def check_store_sync(db: Optional[Database] = None) -> Dict[str, Any]:
         chunk_count = database.count_chunks()
 
         database.cur.execute(
-            """
+            f"""
             SELECT COUNT(*) FROM gr_documents d
             WHERE d.ocr_text IS NOT NULL AND length(trim(d.ocr_text)) > 50
               AND NOT EXISTS (SELECT 1 FROM gr_chunks c WHERE c.document_id = d.id)
+              AND {_CORPUS_EMBED_EXCLUDE}
             """
         )
         ocr_without_chunks = int(database.cur.fetchone()[0])

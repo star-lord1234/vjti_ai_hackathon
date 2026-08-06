@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS gr_documents(
     citations JSONB,
     ocr_text TEXT,
     embedding vector(768),
+    status VARCHAR,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -40,3 +41,26 @@ CREATE INDEX IF NOT EXISTS gr_chunks_doc_id_idx ON gr_chunks(document_id);
 CREATE INDEX IF NOT EXISTS gr_chunks_embedding_hnsw_idx
 ON gr_chunks USING hnsw (embedding vector_cosine_ops)
 WITH (m = 16, ef_construction = 64);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id BIGSERIAL PRIMARY KEY,
+    gr_document_id BIGINT REFERENCES gr_documents(id) ON DELETE CASCADE,
+    actor VARCHAR NOT NULL,
+    action_type VARCHAR NOT NULL,
+    finding_snapshot JSONB,
+    diff TEXT,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_gr_document_id ON audit_log(gr_document_id);
+
+CREATE TABLE IF NOT EXISTS gr_versions (
+    id BIGSERIAL PRIMARY KEY,
+    gr_document_id BIGINT REFERENCES gr_documents(id) ON DELETE CASCADE,
+    version_number INT NOT NULL,
+    full_text TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (gr_document_id, version_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_gr_versions_gr_document_id ON gr_versions(gr_document_id);

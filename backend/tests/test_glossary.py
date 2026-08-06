@@ -33,8 +33,9 @@ def test_unavailable_when_no_api_keys():
     mock_mgr = MagicMock()
     mock_mgr.get_client.return_value = (None, None)
 
-    with patch("reasoning.glossary.checker.get_llm_manager", return_value=mock_mgr):
-        result = run_glossary_check("सक्षम अधिकारी मंजूर करण्यात येत आहे.")
+    with patch("reasoning.glossary.checker.GLOSSARY_USE_LLM", True):
+        with patch("reasoning.glossary.checker.get_llm_manager", return_value=mock_mgr):
+            result = run_glossary_check("सक्षम अधिकारी मंजूर करण्यात येत आहे.")
 
     assert result.status == "unavailable"
     assert result.reason == "llm_unavailable"
@@ -61,12 +62,20 @@ def test_ok_when_llm_returns_findings():
     mock_completion.choices = [MagicMock(message=MagicMock(content=llm_payload.model_dump_json()))]
     mock_client.chat.completions.create.return_value = mock_completion
 
-    with patch("reasoning.glossary.checker.get_llm_manager", return_value=mock_mgr):
-        result = run_glossary_check("सक्षम अधिकारी मंजूर करण्यात येत आहे.")
+    with patch("reasoning.glossary.checker.GLOSSARY_USE_LLM", True):
+        with patch("reasoning.glossary.checker.get_llm_manager", return_value=mock_mgr):
+            result = run_glossary_check("सक्षम अधिकारी मंजूर करण्यात येत आहे.")
 
     assert result.status == "ok"
     assert len(result.findings) == 1
     assert result.findings[0].canonical_term == "सक्षम प्राधिकरण"
+
+
+def test_deterministic_scan_finds_variant():
+    result = run_glossary_check("सक्षम अधिकारी मंजूर करण्यात येत आहे.")
+    assert result.status == "ok"
+    assert len(result.findings) >= 1
+    assert any(f.text_found == "सक्षम अधिकारी" for f in result.findings)
 
 
 def test_require_available_client_raises():

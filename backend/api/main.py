@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.config import settings
-from api.routes import chat, documents, graph, reasoning, search
+from api.routes import chat, documents, drafts, graph, reasoning, search
 from database.db import Database
 
 logging.basicConfig(
@@ -56,6 +56,7 @@ app.include_router(search.router)
 app.include_router(documents.router)
 app.include_router(graph.router)
 app.include_router(reasoning.router)
+app.include_router(drafts.router)
 app.include_router(chat.router)
 
 

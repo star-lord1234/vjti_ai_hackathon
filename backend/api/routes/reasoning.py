@@ -8,8 +8,9 @@ import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -23,6 +24,7 @@ from reasoning.template import run_template_check
 from reasoning.template.models import TemplateCheckSection
 from reasoning.llm_reasoner import answer_query, check_conflict, compare_grs
 from reasoning.models import ComparisonResult, ConflictFinding, QueryAnswer
+from services.draft import record_ai_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +44,13 @@ class CompareRequest(BaseModel):
 
 class ConflictRequest(BaseModel):
     draft_text: str = Field(..., min_length=1, description="Proposed draft GR text or policy excerpt")
-    top_k: int = Field(15, ge=1, le=100, description="Vector top_k seeds")
-    hops: int = Field(1, ge=0, le=5, description="Graph citation expansion hops")
+    top_k: int = Field(5, ge=1, le=100, description="Vector top_k seeds")
+    hops: int = Field(0, ge=0, le=5, description="Graph citation expansion hops")
+    gr_document_id: Optional[int] = Field(
+        default=None,
+        description="Editable draft ID — when set, initial analysis is written to audit_log",
+    )
+    actor: Optional[str] = Field(default=None, max_length=128)
 
 
 @router.post("/query", response_model=QueryAnswer)
@@ -118,15 +125,17 @@ def reasoning_template(body: ConflictRequest) -> TemplateCheckSection:
 
 
 @router.post("/analyze", response_model=DraftAnalysisResponse)
-def reasoning_analyze(body: ConflictRequest) -> DraftAnalysisResponse:
+def reasoning_analyze(
+    body: ConflictRequest,
+    x_actor: Optional[str] = Header(default=None, alias="X-Actor"),
+) -> DraftAnalysisResponse:
     """
     Run conflict, glossary, and template checks in parallel where possible.
     Always returns HTTP 200 with per-section status — partial success is supported.
     """
-    draft = body.draft_text.strip()
+    from database.db import Database
 
-    def _run_conflict() -> ConflictFinding:
-        return check_conflict(draft_input=draft, top_k=body.top_k, hops=body.hops)
+    draft = body.draft_text.strip()
 
     def _run_glossary() -> GlossaryCheckSection:
         return run_glossary_check(draft)
@@ -138,20 +147,54 @@ def reasoning_analyze(body: ConflictRequest) -> DraftAnalysisResponse:
     glossary_section: GlossaryCheckSection
     template_section: TemplateCheckSection
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        conflict_future = pool.submit(_run_conflict)
-        glossary_future = pool.submit(_run_glossary)
-        template_future = pool.submit(_run_template)
+    # Conflict check uses Postgres on the main thread — psycopg connections are not
+    # thread-safe, and parallel Database() init used to deadlock on schema migrations.
+    db = Database()
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            glossary_future = pool.submit(_run_glossary)
+            template_future = pool.submit(_run_template)
 
-        try:
-            conflict_result = conflict_future.result()
-            conflict_section = ConflictCheckSection(status="ok", result=conflict_result)
-        except Exception as exc:
-            logger.exception("Conflict check failed during /analyze: %s", exc)
-            conflict_section = ConflictCheckSection(status="error", reason=str(exc))
+            try:
+                conflict_result = check_conflict(
+                    draft_input=draft,
+                    top_k=body.top_k,
+                    hops=body.hops,
+                    db=db,
+                )
+                conflict_section = ConflictCheckSection(status="ok", result=conflict_result)
+            except Exception as exc:
+                logger.exception("Conflict check failed during /analyze: %s", exc)
+                conflict_section = ConflictCheckSection(status="error", reason=str(exc))
 
-        glossary_section = glossary_future.result()
-        template_section = template_future.result()
+            glossary_section = glossary_future.result()
+            template_section = template_future.result()
+
+        if body.gr_document_id is not None:
+            draft_row = db.get_draft_document(body.gr_document_id)
+            if draft_row:
+                actor = (body.actor or x_actor or "anonymous").strip() or "anonymous"
+                record_ai_analysis(
+                    db,
+                    body.gr_document_id,
+                    actor,
+                    version_number=int(draft_row.get("version_number") or 1),
+                    template_check=template_section,
+                    glossary_check=glossary_section,
+                    conflict_result=conflict_section.result
+                    if conflict_section.status == "ok"
+                    else None,
+                    conflict_error=conflict_section.reason
+                    if conflict_section.status == "error"
+                    else None,
+                )
+            else:
+                logger.warning(
+                    "Analyze audit skipped — draft %s not found",
+                    body.gr_document_id,
+                )
+    finally:
+        db.close()
 
     return DraftAnalysisResponse(
         conflict_check=conflict_section,
