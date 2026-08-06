@@ -2,6 +2,8 @@
 
 End-to-end system for **Maharashtra Government Resolution (GR) corpus intelligence** and **interactive draft review**: ingest OCR text into PostgreSQL, build a citation graph in Neo4j, run hybrid semantic + graph retrieval, and analyse uploaded drafts through a React web app with conflict detection, template compliance, bilingual terminology checking, and a document-aware chat assistant.
 
+Designed for local-only deployment: embeddings, reasoning, draft analysis, and chat can all run fully offline once models and data are available.
+
 ---
 
 ## Features
@@ -116,16 +118,16 @@ User uploads / pastes draft (TXT or PDF)
 
 ## Tech stack
 
-| Layer | Technologies |
-|-------|----------------|
-| **Backend** | Python 3.10+, FastAPI, Uvicorn, Pydantic v2 |
-| **LLM** | Local [Ollama](https://ollama.com/) (`llama3.1` for analysis, chat, and ingest backfill) |
-| **Database** | PostgreSQL 14+ with **pgvector** |
-| **Graph** | Neo4j 5+ (Bolt) |
-| **Embeddings** | `sentence-transformers` (multilingual MPNet, 768-dim) |
-| **Frontend** | React 18, TypeScript, Vite 6, Tailwind CSS 4, Lucide icons |
-| **PDF** | `pdfjs-dist` (client-side text extraction) |
-| **Tooling** | pytest, Make targets for tests and retrieval eval |
+| Layer          | Technologies                                                                             |
+| -------------- | ---------------------------------------------------------------------------------------- |
+| **Backend**    | Python 3.10+, FastAPI, Uvicorn, Pydantic v2                                              |
+| **LLM**        | Local [Ollama](https://ollama.com/) (`llama3.1` for analysis, chat, and ingest backfill) |
+| **Database**   | PostgreSQL 14+ with **pgvector**                                                         |
+| **Graph**      | Neo4j 5+ (Bolt)                                                                          |
+| **Embeddings** | `sentence-transformers` (multilingual MPNet, 768-dim)                                    |
+| **Frontend**   | React 18, TypeScript, Vite 6, Tailwind CSS 4, Lucide icons                               |
+| **PDF**        | `pdfjs-dist` (client-side text extraction)                                               |
+| **Tooling**    | pytest, Make targets for tests and retrieval eval                                        |
 
 ---
 
@@ -135,20 +137,20 @@ Third-party models and data used by this project. Self-hosted stores (PostgreSQL
 
 ### LLM (Ollama — local inference)
 
-All LLM calls go through a **local Ollama** server. Default model: **`llama3.1`**. No cloud API keys required.
+All LLM calls go through a **local Ollama** server. Default model: **`llama3.1`**. Fully offline capable with no cloud API keys required.
 
-| Model tag | Env var | Used for |
-|-----------|---------|----------|
-| `llama3.1` | `REASONING_MODEL` | Conflict detection, glossary terminology check, corpus Q&A, GR comparison |
-| `llama3.1` | `INGEST_LLM_MODEL` | Ingest metadata backfill when rule extraction leaves gaps |
-| `llama3.1` | `OLLAMA_CHAT_MODEL` | Draft chat assistant (`POST /chat/message`) |
+| Model tag  | Env var             | Used for                                                                  |
+| ---------- | ------------------- | ------------------------------------------------------------------------- |
+| `llama3.1` | `REASONING_MODEL`   | Conflict detection, glossary terminology check, corpus Q&A, GR comparison |
+| `llama3.1` | `INGEST_LLM_MODEL`  | Ingest metadata backfill when rule extraction leaves gaps                 |
+| `llama3.1` | `OLLAMA_CHAT_MODEL` | Draft chat assistant (`POST /chat/message`)                               |
 
 **Client separation**
 
-| Client | Module | Notes |
-|--------|--------|-------|
-| Analysis pool | `llm/manager.py` (`LLMClientManager`) | Conflict, glossary, query, compare |
-| Chat (isolated) | `backend/chat/service.py` | Separate Ollama client instance |
+| Client          | Module                                | Notes                              |
+| --------------- | ------------------------------------- | ---------------------------------- |
+| Analysis pool   | `llm/manager.py` (`LLMClientManager`) | Conflict, glossary, query, compare |
+| Chat (isolated) | `backend/chat/service.py`             | Separate Ollama client instance    |
 
 Configure via `OLLAMA_BASE_URL` (default `http://localhost:11434/v1`) and `OLLAMA_MODEL`.
 
@@ -156,18 +158,18 @@ Template/structure checking is **rule-based** and does not call any LLM.
 
 ### Embedding model (Hugging Face — local inference)
 
-| Model | Env var | Notes |
-|-------|---------|-------|
+| Model                                                                                                                                               | Env var           | Notes                                                                                                          |
+| --------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------- |
 | [`sentence-transformers/paraphrase-multilingual-mpnet-base-v2`](https://huggingface.co/sentence-transformers/paraphrase-multilingual-mpnet-base-v2) | `EMBEDDING_MODEL` | Downloaded on first run; 768-dim vectors; runs locally via `sentence-transformers` (no external embedding API) |
 
 ### Datasets & reference data
 
-| Source | Location | In git? | Description |
-|--------|----------|---------|-------------|
-| **Maharashtra GR OCR corpus** | `backend/maha_grs/fulltext/*.txt` (or `GR_FULLTEXT_DIR`) | No | ~8,250 Government Resolution fulltext files. Original PDFs from the [Maharashtra GR portal](https://gr.maharashtra.gov.in/); OCR text with Marathi (`mr`) primary. Manifest with `source_url` per document: `backend/maha_grs/manifest.jsonl`. |
-| **Ingest metadata** | `metadata/*.json` | No | Rule/LLM-extracted fields per GR (generated by `extract_metadata.py` / `ingest.py`). |
-| **Terminology glossary** | `backend/data/glossary.json` | Yes | ~50 bilingual Marathi/English GR terms and variants — project-maintained seed list for the glossary checker. |
-| **GR template structure** | `backend/data/gr_template_structure.json` | Yes | Expected section order and headings for Maharashtra GR drafts — project-maintained rules for the template checker. |
+| Source                        | Location                                                 | In git? | Description                                                                                                                                                                                                                                    |
+| ----------------------------- | -------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Maharashtra GR OCR corpus** | `backend/maha_grs/fulltext/*.txt` (or `GR_FULLTEXT_DIR`) | No      | ~8,250 Government Resolution fulltext files. Original PDFs from the [Maharashtra GR portal](https://gr.maharashtra.gov.in/); OCR text with Marathi (`mr`) primary. Manifest with `source_url` per document: `backend/maha_grs/manifest.jsonl`. |
+| **Ingest metadata**           | `metadata/*.json`                                        | No      | Rule/LLM-extracted fields per GR (generated by `extract_metadata.py` / `ingest.py`).                                                                                                                                                           |
+| **Terminology glossary**      | `backend/data/glossary.json`                             | Yes     | ~50 bilingual Marathi/English GR terms and variants — project-maintained seed list for the glossary checker.                                                                                                                                   |
+| **GR template structure**     | `backend/data/gr_template_structure.json`                | Yes     | Expected section order and headings for Maharashtra GR drafts — project-maintained rules for the template checker.                                                                                                                             |
 
 **Not used:** no external training datasets, no RAG over third-party legal corpora beyond the Maharashtra GR fulltext above, and no cloud vector DB SaaS (vectors live in local PostgreSQL + pgvector).
 
@@ -211,6 +213,7 @@ OCR fulltext (.txt)
 ## What this project does
 
 ### 1. Hybrid metadata extraction
+
 - **`parser/rule_extractor.py`** — extracts `document_type`, `department`, `gr_number`, `date`, `subject`, and `references` (वाचा / संदर्भ) from the document header using regex only.
 - **`scripts/extract_metadata.py`** — two-phase runner:
   - **Phase 1:** parallel rule extraction; writes a JSON for every file under `metadata/`.
@@ -219,24 +222,29 @@ OCR fulltext (.txt)
 - On this corpus (~6076 files), rules alone complete most documents; LLM is only for gaps.
 
 ### 2. PostgreSQL ingest
+
 - **`scripts/ingest.py`** + **`database/db.py`** upsert each JSON plus the matching OCR file into `gr_documents`.
 - Full OCR text lives in column **`ocr_text`** (not copied into Neo4j).
 - Optional chunk embeddings into **`gr_chunks`** during ingest.
 
 ### 3. Citation resolution
+
 - **`graph/reference_resolver.py`** reads citations from Postgres, extracts a GR number, normalizes it via **`parser/normalize.py`**, and matches `gr_number_canonical`.
 - Output: unique `(source_id, target_id)` edges. Unmatched citations are ignored (no hallucinated links).
 
 ### 4. Neo4j graph load
+
 - **`graph/neo4j_loader.py`** creates `:GR` nodes and `CITES` relationships with `MERGE` (idempotent).
 - Node properties: `id`, `filename`, `gr_number`, `canonical_gr`, `department`, `date`, `subject`.
 
 ### 5. Draft analysis (web app)
+
 - **`POST /reasoning/analyze`** — parallel conflict + glossary + template checks on uploaded draft text.
 - **`reasoning/llm_reasoner.py`** — conflict / query / compare via shared multi-key `APIManager`.
 - **`reasoning/glossary/`** — isolated terminology prompt + `backend/data/glossary.json`.
 - **`reasoning/template/`** + **`parser/section_locator.py`** — rule-based GR structure scoring (`backend/data/gr_template_structure.json`).
 - **`chat/`** — document-aware assistant on a **dedicated local Ollama client** (never the analysis pool).
+- **`drafts/`** — persisted editable draft lifecycle with save, versioning, save-and-recheck flows, plus audit logging for draft analysis.
 
 ---
 
@@ -298,13 +306,13 @@ vjti/
 
 ## Prerequisites
 
-| Tool | Notes |
-|------|--------|
-| Python 3.10+ | Developed with 3.14 locally |
-| Node.js 18+ | For Vite frontend |
-| PostgreSQL 14+ | With `pgvector` extension |
-| Neo4j 5+ | Neo4j Desktop or local server |
-| Ollama | Running locally (`ollama serve`); model `llama3.1` pulled |
+| Tool           | Notes                                                     |
+| -------------- | --------------------------------------------------------- |
+| Python 3.10+   | Developed with 3.14 locally                               |
+| Node.js 18+    | For Vite frontend                                         |
+| PostgreSQL 14+ | With `pgvector` extension                                 |
+| Neo4j 5+       | Neo4j Desktop or local server                             |
+| Ollama         | Running locally (`ollama serve`); model `llama3.1` pulled |
 
 OCR corpus path expected by the scripts:
 
@@ -456,20 +464,20 @@ Search `GR CITES GR` or run the same Cypher; set node captions to `gr_number` or
 
 ## PostgreSQL schema (`gr_documents`)
 
-| Column | Purpose |
-|--------|---------|
-| `id` | Primary key (used as Neo4j node `id`) |
-| `filename` | Unique OCR filename |
-| `document_type` / `document_type_en` | e.g. शासन निर्णय |
-| `department` | Issuing department |
-| `gr_number_original` | As extracted |
-| `gr_number_normalized` | Digits/spacing cleaned |
-| `gr_number_canonical` | Match key for citations |
-| `gr_date` | Issue date |
-| `subject_mr` | Subject |
-| `citations` | JSONB array of `{raw, date}` |
-| `ocr_text` | Full OCR (Postgres only) |
-| `embedding` | pgvector document embedding |
+| Column                               | Purpose                               |
+| ------------------------------------ | ------------------------------------- |
+| `id`                                 | Primary key (used as Neo4j node `id`) |
+| `filename`                           | Unique OCR filename                   |
+| `document_type` / `document_type_en` | e.g. शासन निर्णय                      |
+| `department`                         | Issuing department                    |
+| `gr_number_original`                 | As extracted                          |
+| `gr_number_normalized`               | Digits/spacing cleaned                |
+| `gr_number_canonical`                | Match key for citations               |
+| `gr_date`                            | Issue date                            |
+| `subject_mr`                         | Subject                               |
+| `citations`                          | JSONB array of `{raw, date}`          |
+| `ocr_text`                           | Full OCR (Postgres only)              |
+| `embedding`                          | pgvector document embedding           |
 
 Chunk table **`gr_chunks`** stores clause-level embeddings for finer hybrid retrieval.
 
@@ -512,17 +520,17 @@ reply = handle_chat_message(ChatMessageRequest(message="...", draft_text="..."))
 
 ## Troubleshooting
 
-| Issue | Fix |
-|-------|-----|
-| `Connection refused` on LLM calls | Start Ollama: `ollama serve`; verify `OLLAMA_BASE_URL` in `backend/.env` |
-| Chat unavailable | Ensure Ollama is running; run `ollama list` and confirm `llama3.1` is present |
-| Glossary unavailable but conflict works | LLM client on cooldown — glossary fails fast by design |
-| Postgres connection errors | Check `POSTGRES_*` in `.env`; ensure `maha_gr` exists |
-| Neo4j `ServiceUnavailable` | Start the DBMS in Desktop |
-| Frontend can't reach API | Set `VITE_API_BASE_URL`; check CORS `FRONTEND_ORIGIN` |
-| Context / token limit on conflict | Lower `LLM_MAX_INPUT_TOKENS` or draft size; restart uvicorn after `.env` changes |
-| Conflict fails when WiFi is off | Ensure `EMBEDDING_LOCAL_FILES_ONLY=true`; run `python -m embeddings.embed` once while online to cache the model; keep `ollama serve` running |
-| LLM ingest phase paused | Ollama overloaded or down; re-run later — JSON resume is supported |
+| Issue                                   | Fix                                                                                                                                          |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Connection refused` on LLM calls       | Start Ollama: `ollama serve`; verify `OLLAMA_BASE_URL` in `backend/.env`                                                                     |
+| Chat unavailable                        | Ensure Ollama is running; run `ollama list` and confirm `llama3.1` is present                                                                |
+| Glossary unavailable but conflict works | LLM client on cooldown — glossary fails fast by design                                                                                       |
+| Postgres connection errors              | Check `POSTGRES_*` in `.env`; ensure `maha_gr` exists                                                                                        |
+| Neo4j `ServiceUnavailable`              | Start the DBMS in Desktop                                                                                                                    |
+| Frontend can't reach API                | Set `VITE_API_BASE_URL`; check CORS `FRONTEND_ORIGIN`                                                                                        |
+| Context / token limit on conflict       | Lower `LLM_MAX_INPUT_TOKENS` or draft size; restart uvicorn after `.env` changes                                                             |
+| Conflict fails when WiFi is off         | Ensure `EMBEDDING_LOCAL_FILES_ONLY=true`; run `python -m embeddings.embed` once while online to cache the model; keep `ollama serve` running |
+| LLM ingest phase paused                 | Ollama overloaded or down; re-run later — JSON resume is supported                                                                           |
 
 ---
 
@@ -545,11 +553,11 @@ EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-mpnet-base-v2
 EMBEDDING_BATCH_SIZE=32
 ```
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_MODEL` | `paraphrase-multilingual-mpnet-base-v2` | Multilingual SentenceTransformer (768-dim) |
-| `EMBEDDING_BATCH_SIZE` | `32` | Batch size for inference |
-| `EMBEDDING_MAX_OCR_CHARS` | `500` | OCR prefix in embedding text |
+| Variable                  | Default                                 | Description                                |
+| ------------------------- | --------------------------------------- | ------------------------------------------ |
+| `EMBEDDING_MODEL`         | `paraphrase-multilingual-mpnet-base-v2` | Multilingual SentenceTransformer (768-dim) |
+| `EMBEDDING_BATCH_SIZE`    | `32`                                    | Batch size for inference                   |
+| `EMBEDDING_MAX_OCR_CHARS` | `500`                                   | OCR prefix in embedding text               |
 
 ### 2. Generating Embeddings
 
@@ -662,11 +670,11 @@ python -m reasoning.llm_reasoner conflict "draft text here..."
 
 Extends Phase 5 with additional draft checks, exposed individually and via **`POST /reasoning/analyze`**.
 
-| Check | Module | LLM? | Notes |
-|-------|--------|------|-------|
-| **Conflict** | `reasoning/llm_reasoner.py` | Yes | Shared `LLMClientManager` |
-| **Glossary** | `reasoning/glossary/` | Yes | Separate prompt; same key pool; fail-fast on exhaustion |
-| **Template** | `reasoning/template/` | No | Rule-based; `gr_template_structure.json` + `section_locator.py` |
+| Check        | Module                      | LLM? | Notes                                                           |
+| ------------ | --------------------------- | ---- | --------------------------------------------------------------- |
+| **Conflict** | `reasoning/llm_reasoner.py` | Yes  | Shared `LLMClientManager`                                       |
+| **Glossary** | `reasoning/glossary/`       | Yes  | Separate prompt; same key pool; fail-fast on exhaustion         |
+| **Template** | `reasoning/template/`       | No   | Rule-based; `gr_template_structure.json` + `section_locator.py` |
 
 **Template accuracy scoring:** weighted score over required sections — full credit if present and in order, half credit if misordered, zero if missing.
 
@@ -705,21 +713,26 @@ Interactive docs: `http://localhost:8000/docs`
 
 ### API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Postgres, Neo4j, embeddings, store-sync health |
-| `GET` | `/search?q=...&top_k=20&hops=1` | Hybrid vector + graph search |
-| `GET` | `/search/vector-only?q=...` | Vector-only semantic search |
-| `GET` | `/documents` | Paginated GR list |
-| `GET` | `/documents/{gr_id}` | Full metadata + OCR |
-| `GET` | `/documents/{gr_id}/citations` | Citations + resolved targets |
-| `GET` | `/graph/{gr_id}?hops=2` | Citation subgraph for visualization |
-| `POST` | `/reasoning/query` | RAG Q&A (`QueryAnswer`) |
-| `POST` | `/reasoning/compare` | Pairwise GR comparison |
-| `POST` | `/reasoning/conflict` | Draft conflict detection |
-| `POST` | `/reasoning/glossary` | Terminology check only |
-| `POST` | `/reasoning/analyze` | Parallel conflict + glossary + template |
-| `POST` | `/chat/message` | Document-aware draft chat (isolated key) |
+| Method | Path                                  | Description                                              |
+| ------ | ------------------------------------- | -------------------------------------------------------- |
+| `GET`  | `/health`                             | Postgres, Neo4j, embeddings, store-sync health           |
+| `GET`  | `/search?q=...&top_k=20&hops=1`       | Hybrid vector + graph search                             |
+| `GET`  | `/search/vector-only?q=...`           | Vector-only semantic search                              |
+| `GET`  | `/documents`                          | Paginated GR list                                        |
+| `GET`  | `/documents/{gr_id}`                  | Full metadata + OCR                                      |
+| `GET`  | `/documents/{gr_id}/citations`        | Citations + resolved targets                             |
+| `GET`  | `/graph/{gr_id}?hops=2`               | Citation subgraph for visualization                      |
+| `POST` | `/reasoning/query`                    | RAG Q&A (`QueryAnswer`)                                  |
+| `POST` | `/reasoning/compare`                  | Pairwise GR comparison                                   |
+| `POST` | `/reasoning/conflict`                 | Draft conflict detection                                 |
+| `POST` | `/reasoning/glossary`                 | Terminology check only                                   |
+| `POST` | `/reasoning/template`                 | Rule-based GR template compliance                        |
+| `POST` | `/reasoning/analyze`                  | Parallel conflict + glossary + template                  |
+| `POST` | `/drafts`                             | Create a new editable draft                              |
+| `GET`  | `/drafts/{draft_id}`                  | Fetch saved draft summary and text                       |
+| `POST` | `/drafts/{draft_id}/save`             | Save draft with deterministic checks                     |
+| `POST` | `/drafts/{draft_id}/save-and-recheck` | Save draft and run conflict + glossary + template checks |
+| `POST` | `/chat/message`                       | Document-aware draft chat (isolated key)                 |
 
 ### Analyse response shape (partial success)
 
@@ -740,4 +753,3 @@ Interactive docs: `http://localhost:8000/docs`
 ```
 
 Or `{ "status": "unavailable", "reason": "llm_unavailable" }` / `{ "status": "no_document" }` / `{ "status": "error" }`.
-
