@@ -1,10 +1,14 @@
+from __future__ import annotations
+
 import json
 import os
 import re
 import threading
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import psycopg
+
 
 
 VECTOR_DIM = int(os.getenv("VECTOR_DIM", "768"))

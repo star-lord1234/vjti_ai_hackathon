@@ -17,8 +17,13 @@ from database.db import Database
 
 SYNC_TOLERANCE = float(os.getenv("STORE_SYNC_TOLERANCE", "0.10"))
 
-# Editable officer drafts are stored in gr_documents but are not corpus retrieval targets.
-_CORPUS_EMBED_EXCLUDE = "filename NOT LIKE 'draft-%'"
+# Editable officer drafts and test files are stored in gr_documents but are not corpus retrieval targets.
+_CORPUS_EMBED_EXCLUDE = (
+    "filename NOT LIKE 'draft-%' AND filename NOT LIKE 'test_%' "
+    "AND filename NOT LIKE '%test%' AND filename NOT LIKE 'benchmark_%' "
+    "AND filename NOT LIKE 'e2e_%' AND filename NOT LIKE 'inc_%'"
+)
+
 
 
 def check_store_sync(db: Optional[Database] = None) -> Dict[str, Any]:
