@@ -36,6 +36,7 @@ import {
   Pencil,
   History,
   Share2,
+  ExternalLink,
 } from "lucide-react";
 import { DraftChatWidget } from "./components/DraftChatWidget";
 import { VersionHistoryModal } from "./components/VersionHistoryModal";
@@ -44,6 +45,7 @@ import { HeaderBar } from "./components/HeaderBar";
 import { DepartmentForumView } from "./components/DepartmentForumView";
 import { SharedGRDetailView } from "./components/SharedGRDetailView";
 import { PdfTemplateEditor } from "./components/PdfTemplateEditor";
+import { OriginalGRViewerModal } from "./components/OriginalGRViewerModal";
 import maharashtraSeal from "./components/figma/Seal_of_Maharashtra.svg";
 import {
   checkHealth,
@@ -449,6 +451,7 @@ function InspectorDrawer({
   onBookmark,
   onJump,
   onFlag,
+  onOpenCitedGR,
 }: {
   finding: Finding | null;
   bookmarked: boolean;
@@ -456,6 +459,7 @@ function InspectorDrawer({
   onBookmark: () => void;
   onJump: () => void;
   onFlag: () => void;
+  onOpenCitedGR?: (grRef: string) => void;
 }) {
   const cfg = finding ? severityConfig(finding.severity) : null;
   const Icon = cfg?.icon ?? Info;
@@ -612,6 +616,17 @@ function InspectorDrawer({
                         <p className="text-sm text-amber-950 leading-relaxed">
                           {finding.corpusExcerpt}
                         </p>
+                        <div className="mt-3 pt-2.5 border-t border-amber-200/60 flex items-center justify-between">
+                          <span className="text-[10px] text-amber-700 font-medium">Institutional Corpus GR</span>
+                          <button
+                            onClick={() => onOpenCitedGR?.(displayGr.number || displayGr.label || finding.corpusGrLabel || "")}
+                            className="text-[11px] text-amber-900 bg-amber-200/80 hover:bg-amber-300 border border-amber-300 rounded-lg px-2.5 py-1 font-bold flex items-center gap-1 transition-colors shadow-2xs"
+                            title="Read the complete original text of this cited GR"
+                          >
+                            <ExternalLink size={11} />
+                            Read Full Original GR ↗
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1990,6 +2005,7 @@ function MainAppContent() {
 
   const { profile } = useUserRole();
   const [selectedSharedGrId, setSelectedSharedGrId] = useState<number | null>(null);
+  const [viewingCitedGrRef, setViewingCitedGrRef] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>("upload");
 
   const [draftText, setDraftText] = useState<string>("");
@@ -2975,6 +2991,13 @@ function MainAppContent() {
         onBookmark={() => selectedFinding && toggleBookmark(selectedFinding.id)}
         onJump={handleJumpToClause}
         onFlag={() => showToast("Finding flagged for legal review")}
+        onOpenCitedGR={(grRef) => setViewingCitedGrRef(grRef)}
+      />
+
+      {/* Original Cited GR Full-Text Reader Modal */}
+      <OriginalGRViewerModal
+        grRef={viewingCitedGrRef}
+        onClose={() => setViewingCitedGrRef(null)}
       />
 
       {/* Notif backdrop */}

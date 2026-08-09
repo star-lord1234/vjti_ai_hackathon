@@ -43,8 +43,24 @@ def list_documents(
         db.close()
 
 
+@router.get("/lookup", response_model=Dict[str, Any])
+def lookup_document(query: str = Query(..., description="GR ID, canonical number, or filename label")):
+    """
+    Lookup full original GR document by ID, canonical number, or label.
+    """
+    db = Database()
+    try:
+        doc = db.find_gr_document_by_ref(query)
+        if not doc:
+            raise HTTPException(status_code=404, detail=f"GR document for '{query}' not found.")
+        return doc
+    finally:
+        db.close()
+
+
 @router.get("/{gr_id}", response_model=Dict[str, Any])
 def get_document_by_id(gr_id: int) -> Dict[str, Any]:
+
     """
     Fetch full document detail by ID including ocr_text and raw citations JSONB.
     """

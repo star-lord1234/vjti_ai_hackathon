@@ -664,6 +664,57 @@ class Database:
             item["gr_date"] = str(item["gr_date"])
         return item
 
+    def find_gr_document_by_ref(self, query: str | int) -> dict | None:
+        """
+        Lookup a GR document by ID (if numeric) or matching gr_number_canonical,
+        gr_number_original, gr_number_normalized, or filename.
+        """
+        if not query:
+            return None
+
+        query_str = str(query).strip()
+
+        if query_str.isdigit():
+            doc = self.get_by_id(int(query_str))
+            if doc:
+                return doc
+
+        cleaned = query_str.replace(" ", "").replace("/", "").replace("-", "").replace("_", "")
+
+        self.cur.execute(
+            """
+            SELECT id, filename, document_type, document_type_en, department,
+                   gr_number_original, gr_number_normalized, gr_number_canonical,
+                   gr_date, subject_mr, ocr_text, status
+            FROM gr_documents
+            WHERE (
+                gr_number_canonical ILIKE %s
+                OR gr_number_original ILIKE %s
+                OR gr_number_normalized ILIKE %s
+                OR filename ILIKE %s
+                OR REPLACE(REPLACE(REPLACE(COALESCE(gr_number_canonical, ''), ' ', ''), '/', ''), '-', '') ILIKE %s
+            )
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (
+                f"%{query_str}%",
+                f"%{query_str}%",
+                f"%{query_str}%",
+                f"%{query_str}%",
+                f"%{cleaned}%",
+            ),
+        )
+        row = self.cur.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in self.cur.description]
+        item = dict(zip(cols, row))
+        if item.get("gr_date"):
+            item["gr_date"] = str(item["gr_date"])
+        return item
+
+
     def get_paginated_documents(
         self,
         page: int = 1,

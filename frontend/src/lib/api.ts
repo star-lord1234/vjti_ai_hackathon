@@ -722,3 +722,25 @@ export async function updateTemplate(fields: Partial<Omit<PdfTemplate, "id" | "u
 export function getTemplatePdfPreviewUrl(): string {
   return `${API_BASE_URL}/template/preview`;
 }
+
+// ── Document Lookup API ───────────────────────────────────────────────────────
+
+export interface GRDocumentDetail {
+  id: number;
+  filename: string;
+  gr_number_canonical?: string | null;
+  gr_number_original?: string | null;
+  gr_number_normalized?: string | null;
+  department?: string | null;
+  gr_date?: string | null;
+  subject_mr?: string | null;
+  ocr_text?: string | null;
+  status?: string | null;
+}
+
+export async function lookupGRDocument(query: string | number): Promise<GRDocumentDetail> {
+  const res = await fetch(`${API_BASE_URL}/documents/lookup?query=${encodeURIComponent(query)}`);
+  if (!res.ok) throw new ApiError(res.status, `Failed to find GR document '${query}'`);
+  return res.json();
+}
+
