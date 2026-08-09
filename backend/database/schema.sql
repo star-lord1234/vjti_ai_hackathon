@@ -59,6 +59,12 @@ CREATE TABLE IF NOT EXISTS gr_versions (
     gr_document_id BIGINT REFERENCES gr_documents(id) ON DELETE CASCADE,
     version_number INT NOT NULL,
     full_text TEXT NOT NULL,
+    actor VARCHAR(128) DEFAULT 'anonymous',
+    lines_added INT DEFAULT 0,
+    lines_deleted INT DEFAULT 0,
+    chars_added INT DEFAULT 0,
+    chars_deleted INT DEFAULT 0,
+    raw_diff TEXT,
     created_at TIMESTAMPTZ DEFAULT now(),
     UNIQUE (gr_document_id, version_number)
 );

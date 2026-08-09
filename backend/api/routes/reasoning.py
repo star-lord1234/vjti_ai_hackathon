@@ -193,11 +193,110 @@ def reasoning_analyze(
                     "Analyze audit skipped — draft %s not found",
                     body.gr_document_id,
                 )
+
+        return DraftAnalysisResponse(
+            conflict_check=conflict_section,
+            glossary_check=glossary_section,
+            template_check=template_section,
+        )
     finally:
         db.close()
 
-    return DraftAnalysisResponse(
-        conflict_check=conflict_section,
-        glossary_check=glossary_section,
-        template_check=template_section,
-    )
+
+import json
+
+from fastapi.responses import StreamingResponse
+
+
+@router.post("/analyze-stream")
+def reasoning_analyze_stream(
+    body: ConflictRequest,
+    x_actor: Optional[str] = Header(default=None, alias="X-Actor"),
+) -> StreamingResponse:
+    """
+    Stream real-time analysis progress events via Server-Sent Events (SSE).
+    Emits granular progress metrics (GR corpus count, candidate count, conflict count).
+    """
+    from database.db import Database
+    from reasoning.clause_parser import extract_draft_clauses
+
+    draft = body.draft_text.strip()
+    actor = (body.actor or x_actor or "anonymous").strip() or "anonymous"
+
+    def event_stream():
+        # Step 1: Initial event
+        yield f"event: progress\ndata: {json.dumps({'step': 'read', 'label': 'Reading Document', 'detail': f'Parsing {len(draft)} chars of draft text', 'count': len(draft)}, ensure_ascii=False)}\n\n"
+
+        # Step 2: Clause extraction
+        clauses = extract_draft_clauses(draft)
+        yield f"event: progress\ndata: {json.dumps({'step': 'extract', 'label': 'Extracting Clauses', 'detail': f'Identified {len(clauses)} operative resolution clauses', 'count': len(clauses)}, ensure_ascii=False)}\n\n"
+
+        # Step 3: Database & Retrieval
+        db = Database()
+        try:
+            total_grs = db.count()
+            yield f"event: progress\ndata: {json.dumps({'step': 'corpus', 'label': 'Corpus Search', 'detail': f'Searching across {total_grs:,} statutory Government Resolutions', 'count': total_grs}, ensure_ascii=False)}\n\n"
+
+            def _run_glossary() -> GlossaryCheckSection:
+                return run_glossary_check(draft)
+
+            def _run_template() -> TemplateCheckSection:
+                return run_template_check(draft)
+
+            conflict_section: ConflictCheckSection
+            glossary_section: GlossaryCheckSection
+            template_section: TemplateCheckSection
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                glossary_future = pool.submit(_run_glossary)
+                template_future = pool.submit(_run_template)
+
+                yield f"event: progress\ndata: {json.dumps({'step': 'detect', 'label': 'Detecting Conflicts', 'detail': 'Running vector search & Neo4j citation graph expansion…'}, ensure_ascii=False)}\n\n"
+
+                try:
+                    conflict_result = check_conflict(
+                        draft_input=draft,
+                        top_k=body.top_k,
+                        hops=body.hops,
+                        db=db,
+                    )
+                    conflict_section = ConflictCheckSection(status="ok", result=conflict_result)
+                    conflicts_count = len(conflict_result.conflict_pairs or []) if conflict_result else 0
+                    yield f"event: progress\ndata: {json.dumps({'step': 'analyse', 'label': 'Generating Analysis', 'detail': f'Analysis complete — {conflicts_count} conflict(s) evaluated', 'count': conflicts_count}, ensure_ascii=False)}\n\n"
+                except Exception as exc:
+                    logger.exception("Conflict check failed during /analyze-stream: %s", exc)
+                    conflict_section = ConflictCheckSection(status="error", reason=str(exc))
+                    yield f"event: progress\ndata: {json.dumps({'step': 'analyse', 'label': 'Generating Analysis', 'detail': f'Conflict evaluation issue: {exc}'}, ensure_ascii=False)}\n\n"
+
+                glossary_section = glossary_future.result()
+                template_section = template_future.result()
+
+            if body.gr_document_id is not None:
+                draft_row = db.get_draft_document(body.gr_document_id)
+                if draft_row:
+                    record_ai_analysis(
+                        db,
+                        body.gr_document_id,
+                        actor,
+                        version_number=int(draft_row.get("version_number") or 1),
+                        template_check=template_section,
+                        glossary_check=glossary_section,
+                        conflict_result=conflict_section.result
+                        if conflict_section.status == "ok"
+                        else None,
+                        conflict_error=conflict_section.reason
+                        if conflict_section.status == "error"
+                        else None,
+                    )
+
+            final_response = DraftAnalysisResponse(
+                conflict_check=conflict_section,
+                glossary_check=glossary_section,
+                template_check=template_section,
+            )
+
+            yield f"event: complete\ndata: {final_response.model_dump_json()}\n\n"
+        finally:
+            db.close()
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")

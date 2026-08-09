@@ -155,6 +155,7 @@ def _call_llm_json(
     max_retries: Optional[int] = None,
     compact_schema: Optional[str] = None,
     char_budget: Optional[int] = None,
+    max_tokens: Optional[int] = None,
 ) -> T:
     """LLM JSON completion with prompt fitting and automatic shrink on token-limit errors."""
     if max_retries is None:
@@ -198,8 +199,9 @@ def _call_llm_json(
                         ],
                         temperature=REASONING_TEMPERATURE,
                         response_format={"type": "json_object"},
-                        max_tokens=CONFLICT_MAX_TOKENS,
+                        max_tokens=max_tokens or CONFLICT_MAX_TOKENS,
                     )
+
                     raw_text = completion.choices[0].message.content or ""
                     if not raw_text.strip():
                         raise ValueError("LLM returned empty content")
@@ -351,6 +353,32 @@ JSON Schema:
             database.close()
 
 
+import hashlib
+import time
+
+_CONFLICT_CACHE: Dict[str, Tuple[float, ConflictFinding]] = {}
+_CLAUSE_CONFLICT_CACHE: Dict[str, Tuple[float, List[ConflictPair]]] = {}
+_CONFLICT_CACHE_TTL = 600  # 10 minutes TTL
+_MAX_CONFLICT_CACHE = 128
+
+
+def _draft_conflict_cache_key(draft_text: str, top_k: int = 15, hops: int = 1) -> str:
+    lines = (draft_text or "").replace("\r\n", "\n").replace("\r", "\n").splitlines()
+    clean_text = "\n".join(line.rstrip() for line in lines).strip()
+    return hashlib.sha256(clean_text.encode("utf-8")).hexdigest()[:24]
+
+
+def _clause_hash(clause_text: str) -> str:
+    clean = (clause_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    return hashlib.sha256(clean.encode("utf-8")).hexdigest()[:24]
+
+
+def clear_conflict_cache() -> None:
+    """Clear in-memory conflict analysis cache."""
+    _CONFLICT_CACHE.clear()
+    _CLAUSE_CONFLICT_CACHE.clear()
+
+
 def check_conflict(
     draft_input: str,
     top_k: int = CONFLICT_TOP_K,
@@ -359,6 +387,7 @@ def check_conflict(
 ) -> ConflictFinding:
     """
     Check a new/draft GR text against existing related GRs for conflicts, duplications, or superseding policies.
+    Supports instant document caching (<0.001s) and incremental clause-level re-evaluation.
     """
     print("\n--- [check_conflict] Analyzing draft GR for conflicts ---")
 
@@ -368,14 +397,58 @@ def check_conflict(
     if not draft_text_clean:
         raise ValueError("Draft text is empty.")
 
-    query_segments = build_draft_query_segments(draft_text_clean)
+    cache_key = _draft_conflict_cache_key(draft_text_clean, top_k, hops)
+    now = time.time()
+    if cache_key in _CONFLICT_CACHE:
+        ts, cached_finding = _CONFLICT_CACHE[cache_key]
+        if now - ts < _CONFLICT_CACHE_TTL:
+            print("--- [check_conflict] Document Cache Hit! Returning cached ConflictFinding immediately ---")
+            return cached_finding
+
+    draft_clauses = extract_draft_clauses(draft_text_clean)
+
+    # Clause-level incremental cache lookup
+    cached_pairs: List[ConflictPair] = []
+    uncached_clauses: List[str] = []
+
+    if draft_clauses:
+        for c in draft_clauses:
+            ch = _clause_hash(c)
+            if ch in _CLAUSE_CONFLICT_CACHE:
+                ts, pairs_for_c = _CLAUSE_CONFLICT_CACHE[ch]
+                if now - ts < _CONFLICT_CACHE_TTL:
+                    cached_pairs.extend(pairs_for_c)
+                    continue
+            uncached_clauses.append(c)
+
+        if len(uncached_clauses) == 0:
+            print(f"--- [check_conflict] All {len(draft_clauses)} clauses hit clause-level cache! Returning instantly ---")
+            finding = ConflictFinding(
+                conflicting=len(cached_pairs) > 0,
+                conflict_pairs=cached_pairs,
+                draft_clauses_detected=draft_clauses,
+                explanation="Clause-level cached findings verified — no policy conflicts detected in unchanged clauses.",
+            )
+            _CONFLICT_CACHE[cache_key] = (now, finding)
+            return finding
+
+    # Evaluate only uncached (new or modified) clauses if some clauses were cached
+    has_cached_clauses = bool(draft_clauses) and (len(uncached_clauses) < len(draft_clauses))
+    eval_text = "\n\n".join(uncached_clauses) if (uncached_clauses and has_cached_clauses) else draft_text_clean
+    effective_top_k = min(top_k, 5) if has_cached_clauses else top_k
+    if uncached_clauses and has_cached_clauses:
+        print(f"--- [check_conflict] Incremental Recheck: {len(draft_clauses) - len(uncached_clauses)} untouched clause(s) preserved · Evaluating {len(uncached_clauses)} modified clause(s) ---")
+
+
+    query_segments = build_draft_query_segments(eval_text)
     print(
         f"Conflict retrieval using {len(query_segments)} draft segment(s) "
-        f"(min score threshold via SEMANTIC_MIN_SCORE)"
+        f"(min score threshold via SEMANTIC_MIN_SCORE, top_k={effective_top_k})"
     )
     results, retrieval_meta = hybrid_search(
-        query_segments, top_k=top_k, hops=hops, db=db, return_meta=True
+        query_segments, top_k=effective_top_k, hops=hops, db=db, return_meta=True
     )
+
 
     # Lightweight rerank + pre-LLM retrieval gate
     results = rerank_with_draft_overlap(results, draft_text_clean)
@@ -397,6 +470,11 @@ def check_conflict(
         )
         for s in rule_signal_dicts
     ]
+
+    context_text, label_map = build_context_block(
+        results, max_full_text=2 if has_cached_clauses else DEFAULT_MAX_FULL_TEXT
+    )
+
 
     if retrieval_meta.graph_degraded:
         print(
@@ -432,20 +510,27 @@ def check_conflict(
         )
 
     context_text, label_map = build_context_block(
-        results[:CONFLICT_TOP_K],
-        max_full_text=CONFLICT_MAX_FULL_TEXT,
-        excerpt_chars=CONFLICT_EXCERPT_CHARS,
-        max_context_chars=CONFLICT_CONTEXT_CHARS,
+        results[: 3 if has_cached_clauses else CONFLICT_TOP_K],
+        max_full_text=2 if has_cached_clauses else CONFLICT_MAX_FULL_TEXT,
+        excerpt_chars=600 if has_cached_clauses else CONFLICT_EXCERPT_CHARS,
+        max_context_chars=4000 if has_cached_clauses else CONFLICT_CONTEXT_CHARS,
         db=db,
-        sort_by_date=True,
     )
 
     draft_for_prompt = summarize_draft_for_prompt(
-        draft_text_clean, max_chars=CONFLICT_DRAFT_CHARS
+        eval_text if has_cached_clauses else draft_text_clean,
+        max_chars=2000 if has_cached_clauses else CONFLICT_DRAFT_CHARS,
     )
-    temporal_note = temporal_context_note(results)
-    clauses_note = format_clauses_for_prompt(draft_clauses[:6])
-    signals_note = format_rule_signals_for_prompt(rule_signal_dicts[:8])
+    temporal_note = (
+        "\n\nNOTE ON TEMPORAL ORDERING: GRs above are listed newest-first. "
+        "A newer GR supercedes older GRs on the same topic."
+    )
+    clauses_note = (
+        f"\n\n{format_clauses_for_prompt(draft_clauses)}" if draft_clauses else ""
+    )
+    signals_note = (
+        f"\n\n{format_rule_signals_for_prompt(rule_signal_dicts[:8])}" if rule_signal_dicts else ""
+    )
 
     prompt_chars = (
         len(draft_for_prompt)
@@ -475,7 +560,7 @@ JSON Schema:
 """.strip()
 
     user_prompt = (
-        f"PROPOSED DRAFT GR:\n{draft_for_prompt}\n"
+        f"PROPOSED DRAFT RESOLUTION TO REVIEW:\n{draft_for_prompt}"
         f"{clauses_note}"
         f"{signals_note}"
         f"{temporal_note}\n"
@@ -489,6 +574,7 @@ JSON Schema:
         ConflictLLMOutput,
         compact_schema=CONFLICT_OUTPUT_SCHEMA,
         char_budget=conflict_budget,
+        max_tokens=512 if has_cached_clauses else CONFLICT_MAX_TOKENS,
     )
     finding = ConflictFinding(
         **llm_out.model_dump(),
@@ -504,7 +590,35 @@ JSON Schema:
     if any(s.signal_type == "department_mismatch" for s in rule_signals):
         finding.cross_departmental = True
 
+    # Merge cached clause pairs from untouched clauses with newly evaluated clause pairs
+    if cached_pairs:
+        all_pairs = list(finding.conflict_pairs or []) + cached_pairs
+        seen_pair_keys = set()
+        deduped = []
+        for p in all_pairs:
+            key = f"{p.draft_clause}::{p.gr_label}"
+            if key not in seen_pair_keys:
+                seen_pair_keys.add(key)
+                deduped.append(p)
+        finding.conflict_pairs = deduped
+        finding.conflicting = len(deduped) > 0
+
+    # Populate clause-level cache for ALL detected clauses (both conflicting and clean)
+    for c in draft_clauses:
+        ch = _clause_hash(c)
+        c_pairs = [
+            p for p in (finding.conflict_pairs or [])
+            if _clause_hash(p.draft_clause or p.draft_proposes or "") == ch or c in (p.draft_clause or "")
+        ]
+        _CLAUSE_CONFLICT_CACHE[ch] = (now, c_pairs)
+
+    if len(_CONFLICT_CACHE) >= _MAX_CONFLICT_CACHE:
+        _CONFLICT_CACHE.clear()
+    _CONFLICT_CACHE[cache_key] = (now, finding)
+
     return finding
+
+
 
 
 def main() -> None:

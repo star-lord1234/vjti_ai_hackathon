@@ -45,7 +45,10 @@ def get_vector_dim() -> int:
 
 def validate_embedding_dimension(model: SentenceTransformer) -> None:
     """Ensure model output dimension matches VECTOR_DIM / schema."""
-    actual = model.get_sentence_embedding_dimension()
+    if hasattr(model, "get_embedding_dimension"):
+        actual = model.get_embedding_dimension()
+    else:
+        actual = model.get_sentence_embedding_dimension()
     expected = get_vector_dim()
     if actual != expected:
         raise ValueError(
@@ -61,10 +64,12 @@ def get_model(model_name: Optional[str] = None) -> SentenceTransformer:
     global _model
     if _model is None:
         name = model_name or MODEL_NAME
-        print(f"Loading embedding model: {name}...")
+        device = os.getenv("EMBEDDING_DEVICE", "cpu")
+        print(f"Loading embedding model: {name} (device={device})...")
         try:
             _model = SentenceTransformer(
                 name,
+                device=device,
                 local_files_only=EMBEDDING_LOCAL_FILES_ONLY,
             )
         except Exception as exc:
@@ -78,6 +83,7 @@ def get_model(model_name: Optional[str] = None) -> SentenceTransformer:
         validate_embedding_dimension(_model)
         print(f"Model loaded successfully (dim={get_vector_dim()}).")
     return _model
+
 
 
 def _vector_to_str(vec) -> str:

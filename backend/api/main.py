@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.config import settings
-from api.routes import chat, documents, drafts, graph, reasoning, search
+from api.routes import chat, documents, drafts, forum, graph, reasoning, search, template
 from database.db import Database
 
 logging.basicConfig(
@@ -32,16 +32,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger("gr_api")
 
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Pre-loading embedding model on startup...")
+    try:
+        from embeddings.embed import get_model
+
+        get_model()
+    except Exception as e:
+        logger.warning(f"Failed to pre-load embedding model: {e}")
+    yield
+
+
 app = FastAPI(
     title="Maharashtra GR Intelligence API",
     version="1.0.0",
     description="HTTP API backend for hybrid search, graph visualization, document management, and AI reasoning over Maharashtra Government Resolutions.",
+    lifespan=lifespan,
 )
 
 # Configure CORS
 origins = [origin.strip() for origin in settings.frontend_origin.split(",") if origin.strip()]
-if not origins:
-    origins = ["http://localhost:5173"]
+for default_origin in ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"]:
+    if default_origin not in origins:
+        origins.append(default_origin)
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,7 +66,23 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled server error on {request.url}: {exc}", exc_info=True)
+    origin = request.headers.get("origin", "*")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+        headers={
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+        },
+    )
+
 
 # Include Routers
 app.include_router(search.router)
@@ -57,7 +90,10 @@ app.include_router(documents.router)
 app.include_router(graph.router)
 app.include_router(reasoning.router)
 app.include_router(drafts.router)
+app.include_router(forum.router)
 app.include_router(chat.router)
+app.include_router(template.router)
+
 
 
 @app.get("/health", tags=["health"])

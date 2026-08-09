@@ -34,21 +34,33 @@ import {
   LayoutTemplate,
   Save,
   Pencil,
+  History,
+  Share2,
 } from "lucide-react";
 import { DraftChatWidget } from "./components/DraftChatWidget";
+import { VersionHistoryModal } from "./components/VersionHistoryModal";
+import { RoleProvider, useUserRole } from "./components/RoleContext";
+import { HeaderBar } from "./components/HeaderBar";
+import { DepartmentForumView } from "./components/DepartmentForumView";
+import { SharedGRDetailView } from "./components/SharedGRDetailView";
+import { PdfTemplateEditor } from "./components/PdfTemplateEditor";
 import maharashtraSeal from "./components/figma/Seal_of_Maharashtra.svg";
 import {
   checkHealth,
   analyzeDraft,
+  analyzeDraftStream,
+  AnalysisProgressEvent,
   createDraft,
   saveDraft,
   saveAndRecheckDraft,
+  shareDraftWithDepartment,
   ConflictFinding,
   GlossaryCheckSection,
   GlossaryFinding,
   DraftAnalysisResponse,
   DraftSaveResponse,
   DraftRecheckResponse,
+  ClauseDiffResult,
   DraftStatus,
   TemplateCheckSection,
   ApiError,
@@ -71,7 +83,8 @@ import {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Phase = "upload" | "processing" | "review";
+type Phase = "upload" | "processing" | "review" | "dept_forum" | "shared_detail" | "pdf_template";
+
 
 // ─── Draft status badge ───────────────────────────────────────────────────────
 
@@ -1293,7 +1306,6 @@ function TerminologyPanel({
   );
 }
 
-// ─── ProcessingView ───────────────────────────────────────────────────────────
 
 function ProcessingView({
   draftText,
@@ -1309,45 +1321,48 @@ function ProcessingView({
   onError: () => void;
 }) {
   const [currentStep, setCurrentStep] = useState(0);
-  const [analysisResult, setAnalysisResult] =
-    useState<DraftAnalysisResponse | null>(null);
+  const [analysisResult, setAnalysisResult] = useState<DraftAnalysisResponse | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [stepDetails, setStepDetails] = useState<Record<string, string>>({});
 
   const runAnalysis = useCallback(() => {
     setErrorMsg(null);
     setCurrentStep(0);
     setDone(false);
+    setAnalysisResult(null);
+    setStepDetails({});
 
-    analyzeDraft(draftText, {
-      grDocumentId: draftDocumentId ?? undefined,
-    })
+    analyzeDraftStream(
+      draftText,
+      (ev: AnalysisProgressEvent) => {
+        setStepDetails((prev) => ({
+          ...prev,
+          [ev.step]: ev.detail,
+        }));
+        if (ev.step === "read") setCurrentStep(0);
+        else if (ev.step === "extract") setCurrentStep(1);
+        else if (ev.step === "corpus" || ev.step === "detect") setCurrentStep(2);
+        else if (ev.step === "analyse") setCurrentStep(3);
+      },
+      { grDocumentId: draftDocumentId ?? undefined }
+    )
       .then((result) => {
         setAnalysisResult(result);
         setCurrentStep(PROCESSING_STEPS.length - 1);
         setDone(true);
+        onComplete(result);
       })
+
+
       .catch((err: ApiError | Error) => {
         setErrorMsg(err.message || "Failed to connect to the analysis API.");
       });
-  }, [draftText, draftDocumentId]);
+  }, [draftText, draftDocumentId, onComplete]);
 
   useEffect(() => {
     runAnalysis();
   }, [runAnalysis]);
-
-  // Advance through early pipeline steps only while the API call is in flight
-  useEffect(() => {
-    if (errorMsg || done || currentStep >= 2) return;
-    const t = setTimeout(() => setCurrentStep((s) => s + 1), 1400);
-    return () => clearTimeout(t);
-  }, [currentStep, errorMsg, done]);
-
-  // Jump to final steps when API returns
-  useEffect(() => {
-    if (!done) return;
-    setCurrentStep(PROCESSING_STEPS.length - 1);
-  }, [done]);
 
   if (errorMsg) {
     return (
@@ -1407,6 +1422,22 @@ function ProcessingView({
               const isStepDone =
                 idx < currentStep || (idx === currentStep && done);
               const isActive = idx === currentStep && !done;
+              const stepKeyMap: Record<string, string[]> = {
+                read: ["read"],
+                extract: ["extract"],
+                detect: ["corpus", "detect"],
+                analyse: ["analyse"],
+                complete: [],
+              };
+              const mappedKeys = stepKeyMap[step.id] || [];
+              let dynamicSub: string | undefined;
+              for (const k of mappedKeys) {
+                if (stepDetails[k]) {
+                  dynamicSub = stepDetails[k];
+                }
+              }
+              const displaySub = dynamicSub || step.sub;
+
               return (
                 <div key={step.id} className="flex items-start gap-3.5">
                   <div
@@ -1719,23 +1750,25 @@ function UploadCard({
         const text = await extractTextFromPdf(file);
         setFileText(text);
       } else {
-        const text = await file.text();
-        if (!text.trim()) {
-          throw new Error("File is empty or unreadable.");
+        const rawText = await file.text();
+        const cleanedText = rawText.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "").trim();
+        if (!cleanedText) {
+          throw new Error("File contains unreadable binary text. Try pasting the draft GR text instead.");
         }
-        setFileText(text);
+        setFileText(cleanedText);
       }
     } catch (err: unknown) {
       setFileText("");
       setExtractError(
         err instanceof Error
           ? err.message
-          : "Could not read file. Paste the draft text instead.",
+          : "Could not read file. Switch to 'Paste Draft GR Text' mode.",
       );
     } finally {
       setExtracting(false);
     }
   }, []);
+
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -1951,10 +1984,14 @@ function UploadCard({
   );
 }
 
-// ─── Main App ─────────────────────────────────────────────────────────────────
+// ─── Main App Content ─────────────────────────────────────────────────────────
 
-export default function App() {
+function MainAppContent() {
+
+  const { profile } = useUserRole();
+  const [selectedSharedGrId, setSelectedSharedGrId] = useState<number | null>(null);
   const [phase, setPhase] = useState<Phase>("upload");
+
   const [draftText, setDraftText] = useState<string>("");
   const [fileName, setFileName] = useState<string>("");
   const [conflictResult, setConflictResult] = useState<ConflictFinding | null>(
@@ -1976,6 +2013,8 @@ export default function App() {
   const [isPreviewMode, setIsPreviewMode] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isRechecking, setIsRechecking] = useState(false);
+  const [lastClauseDiff, setLastClauseDiff] = useState<ClauseDiffResult | null>(null);
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [reviewPanel, setReviewPanel] = useState<
     "conflicts" | "terminology" | "template"
   >("conflicts");
@@ -2056,6 +2095,7 @@ export default function App() {
     setDraftStatus("draft");
     setDraftVersionNumber(1);
     setIsPreviewMode(false);
+    setPhase("processing");
 
     try {
       const draft = await createDraft(text, name);
@@ -2063,14 +2103,12 @@ export default function App() {
       setDraftStatus(draft.status);
       setDraftVersionNumber(draft.version_number);
       setSavedDraftText(draft.full_text);
-      setPhase("processing");
     } catch (err: unknown) {
-      const msg =
-        err instanceof ApiError ? err.message : "Draft could not be persisted";
-      showToast(msg);
-      setPhase("upload");
+      console.warn("Draft persistence warning:", err);
+      // Non-fatal fallback: allow local reasoning analysis to proceed
     }
   };
+
 
   const applyDeterministicResults = (response: DraftSaveResponse) => {
     setGlossaryCheck(response.glossary_check);
@@ -2095,12 +2133,55 @@ export default function App() {
       setConflictResult(null);
       setConflictErrorReason(response.conflict_check.reason ?? null);
     }
+    // Store clause diff so UI can show which clauses were re-checked vs. unchanged
+    if (response.clause_diff) {
+      setLastClauseDiff(response.clause_diff);
+    }
   };
 
   const handleEditedDraftChange = (text: string) => {
     setEditedDraftText(text);
     setIsDirty(text !== savedDraftText);
   };
+
+  const handleDownloadTxt = () => {
+    const textToDownload = editedDraftText || draftText;
+    if (!textToDownload || !textToDownload.trim()) {
+      showToast("No content available to download.");
+      return;
+    }
+    const cleanName = (fileName || "government_resolution_draft").replace(/\.[^/.]+$/, "");
+    exportTextFile(`${cleanName}.txt`, textToDownload);
+    showToast(`Downloaded ${cleanName}.txt`);
+  };
+
+  const handleShareWithDept = async () => {
+    let docId = draftDocumentId;
+    if (!docId && editedDraftText) {
+      try {
+        const created = await createDraft(editedDraftText, fileName || "government_resolution_draft.txt");
+        docId = created.id;
+        setDraftDocumentId(docId);
+      } catch (err: unknown) {
+        showToast("Could not create draft record to share.");
+        return;
+      }
+    }
+    if (!docId) {
+      showToast("No active draft document to share.");
+      return;
+    }
+    try {
+      await shareDraftWithDepartment(docId, profile.name);
+      showToast("GR Draft shared with department for employee review & Q&A!");
+      setPhase("dept_forum");
+    } catch (err: unknown) {
+      const msg = err instanceof ApiError ? err.message : "Sharing failed";
+      showToast(msg);
+    }
+  };
+
+
 
   const handleSaveDraft = async () => {
     if (!draftDocumentId) {
@@ -2133,10 +2214,16 @@ export default function App() {
       );
       applyRecheckResults(response);
       setReviewPanel("conflicts");
+      const diff = response.clause_diff;
+      const changedCount = (diff?.added?.length ?? 0) + (diff?.modified?.length ?? 0);
+      const unchangedCount = diff?.unchanged?.length ?? 0;
+      const diffNote = diff?.has_changes
+        ? ` · ${changedCount} clause${changedCount !== 1 ? "s" : ""} re-checked, ${unchangedCount} unchanged`
+        : " · No clause changes detected";
       showToast(
         response.draft.status === "ready_for_approval"
-          ? "Recheck complete — ready for approval"
-          : "Recheck complete — issues remain",
+          ? `Recheck complete — ready for approval${diffNote}`
+          : `Recheck complete — issues remain${diffNote}`,
       );
     } catch (err: unknown) {
       const msg = err instanceof ApiError ? err.message : "Recheck failed";
@@ -2345,175 +2432,30 @@ export default function App() {
           </div>
         )}
 
-      {/* ── Top Navigation ── */}
-      <header className="h-16 bg-white border-b border-[#E5E7EB] flex items-center px-5 gap-4 flex-shrink-0 z-30">
-        <div className="flex items-center gap-3 mr-4">
-          <img
-            src={maharashtraSeal}
-            alt="Seal of Maharashtra"
-            className="w-10 h-10 object-contain flex-shrink-0"
-          />
-          <div className="flex items-baseline gap-1.5">
-            <span className="text-sm font-bold text-[#111827] tracking-tight">
-              निर्णय सहाय्यता
-            </span>
-            <span className="hidden xl:block text-xs text-[#9CA3AF] font-medium">
-              · Government of Maharashtra
-            </span>
-          </div>
-        </div>
+      {/* ── Top Navigation Bar ── */}
+      <HeaderBar
+        phase={phase}
+        onNavigate={(targetPhase) => setPhase(targetPhase)}
+        onShareWithDept={handleShareWithDept}
+        onDownloadTxt={handleDownloadTxt}
+        onNewReview={() => {
+          setPhase("upload");
+          setSelectedFinding(null);
+          setConflictResult(null);
+          setConflictErrorReason(null);
+          setDraftDocumentId(null);
+          setDraftStatus("draft");
+          setDraftVersionNumber(1);
+          setEditedDraftText("");
+          setSavedDraftText("");
+          setIsDirty(false);
+          setIsPreviewMode(false);
+          setFilterSeverity("all");
+        }}
+        onReportExport={handleReportExport}
+        draftDocumentId={draftDocumentId}
+      />
 
-        {/* Global search */}
-        <div className="flex-1 max-w-xs">
-          <div className="relative">
-            <Search
-              size={13}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-[#9CA3AF]"
-            />
-            <input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search clauses, findings…"
-              className="w-full pl-8 pr-4 py-2 text-sm bg-[#F9FAFB] border border-[#E5E7EB] rounded-xl placeholder-[#C4C9D4] text-[#111827] focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB] transition-all"
-            />
-          </div>
-        </div>
-
-        <div className="flex-1" />
-
-        {phase === "review" && (
-          <div className="hidden lg:flex items-center gap-2 text-xs text-[#6B7280] border-r border-[#E5E7EB] pr-4 mr-1">
-            <TrendingUp size={13} className="text-[#22C55E]" />
-            <span>
-              <span className="font-semibold text-[#111827]">
-                {findings.length}
-              </span>{" "}
-              findings · analyzed{" "}
-              <span className="font-semibold text-[#111827]">
-                {new Date().toLocaleDateString("en-GB", {
-                  day: "numeric",
-                  month: "short",
-                  year: "numeric",
-                })}
-              </span>
-            </span>
-          </div>
-        )}
-
-        <div className="flex items-center gap-2">
-          {phase === "review" && (
-            <>
-              <button
-                onClick={handleDraftExport}
-                disabled={!canExportDraft}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
-                  canExportDraft
-                    ? "border-[#E5E7EB] text-[#374151] hover:bg-[#F9FAFB]"
-                    : "border-[#E5E7EB] text-[#9CA3AF] bg-[#F3F4F6] cursor-not-allowed"
-                }`}
-                title={
-                  canExportDraft
-                    ? "Download the original draft"
-                    : "Draft export is available only when no issues are detected"
-                }
-              >
-                <Download size={12} />
-                Draft Export
-              </button>
-              <button
-                onClick={handleReportExport}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E5E7EB] text-xs font-semibold text-[#374151] hover:bg-[#F9FAFB] transition-colors"
-              >
-                <FileText size={12} />
-                Report Export
-              </button>
-              <button
-                onClick={() => {
-                  setPhase("upload");
-                  setSelectedFinding(null);
-                  setConflictResult(null);
-                  setConflictErrorReason(null);
-                  setDraftDocumentId(null);
-                  setDraftStatus("draft");
-                  setDraftVersionNumber(1);
-                  setEditedDraftText("");
-                  setSavedDraftText("");
-                  setIsDirty(false);
-                  setIsPreviewMode(false);
-                  setFilterSeverity("all");
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E5E7EB] text-xs font-semibold text-[#374151] hover:bg-[#F9FAFB] transition-colors"
-              >
-                <RefreshCw size={12} />
-                New Review
-              </button>
-            </>
-          )}
-
-          {/* Notifications */}
-          <div className="relative">
-            <button
-              onClick={() => setNotifOpen((o) => !o)}
-              className="relative p-2 rounded-xl hover:bg-[#F3F4F6] text-[#6B7280] hover:text-[#111827] transition-colors"
-            >
-              <Bell size={17} />
-              {phase === "review" && (
-                <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-[#EF4444] rounded-full border-2 border-white" />
-              )}
-            </button>
-            {notifOpen && (
-              <div className="absolute right-0 top-11 w-80 bg-white rounded-2xl border border-[#E5E7EB] shadow-xl z-50 overflow-hidden">
-                <div className="flex items-center justify-between px-4 py-3 border-b border-[#E5E7EB]">
-                  <p className="text-sm font-semibold text-[#111827]">
-                    Notifications
-                  </p>
-                  <span className="text-xs text-[#9CA3AF]">
-                    {phase === "review" ? "1 unread" : "0 unread"}
-                  </span>
-                </div>
-                <div className="p-2">
-                  {phase === "review" ? (
-                    <div className="px-3 py-3 rounded-xl bg-[#EFF6FF] border border-[#BFDBFE] mb-1">
-                      <div className="flex items-start gap-2.5">
-                        <div className="w-6 h-6 rounded-lg bg-[#2563EB] flex items-center justify-center flex-shrink-0 mt-0.5">
-                          <CheckCircle2 size={12} className="text-white" />
-                        </div>
-                        <div>
-                          <p className="text-xs font-semibold text-[#111827] mb-0.5">
-                            Conflict Analysis Complete
-                          </p>
-                          <p className="text-xs text-[#6B7280] leading-relaxed">
-                            {findings.length} finding(s) detected via FastAPI
-                            reasoning engine.
-                          </p>
-                          <p className="text-xs text-[#9CA3AF] mt-1.5 flex items-center gap-1">
-                            <Clock size={10} /> Just now
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="text-xs text-[#9CA3AF] text-center py-6">
-                      No new notifications
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* User profile */}
-          <button className="flex items-center gap-2 pl-2 pr-3 py-1.5 rounded-xl hover:bg-[#F3F4F6] transition-colors">
-            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#2563EB] to-[#7C3AED] flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
-              AS
-            </div>
-            <span className="hidden sm:block text-sm font-medium text-[#374151]">
-              Ankita Sagar
-            </span>
-            <ChevronDown size={13} className="text-[#9CA3AF]" />
-          </button>
-        </div>
-      </header>
 
       {/* ── Upload Phase ── */}
       {phase === "upload" && (
@@ -2565,9 +2507,23 @@ export default function App() {
               <span className="text-[#D1D5DB]">·</span>
               <DraftStatusBadge status={draftStatus} />
               <span className="text-[#D1D5DB]">·</span>
-              <span className="font-medium text-[#374151]">
-                Version {draftVersionNumber}
-              </span>
+              <button
+                onClick={() => {
+                  if (draftDocumentId) {
+                    setIsHistoryModalOpen(true);
+                  }
+                }}
+                disabled={!draftDocumentId}
+                title={draftDocumentId ? "View GitHub-style version history" : "Save draft first to view version history"}
+                className={`inline-flex items-center gap-1.5 font-semibold text-xs px-2.5 py-0.5 rounded-md transition-all ${
+                  draftDocumentId
+                    ? "bg-blue-50 text-blue-700 hover:bg-blue-100 cursor-pointer border border-blue-200/80 shadow-xs"
+                    : "text-[#374151] opacity-75 cursor-not-allowed"
+                }`}
+              >
+                <History size={12} className={draftDocumentId ? "text-blue-600" : "text-[#6B7280]"} />
+                <span>Version {draftVersionNumber} History</span>
+              </button>
               {isDirty && (
                 <>
                   <span className="text-[#D1D5DB]">·</span>
@@ -2576,6 +2532,15 @@ export default function App() {
                   </span>
                 </>
               )}
+              <span className="text-[#D1D5DB]">·</span>
+              <button
+                onClick={handleDownloadTxt}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200/80 px-2.5 py-0.5 rounded-md transition-all cursor-pointer shadow-xs"
+                title="Download resolution draft text as a .txt file"
+              >
+                <Download size={12} className="text-emerald-600" />
+                <span>Download .txt</span>
+              </button>
               <span className="text-[#D1D5DB]">·</span>
               <span className="text-[#22C55E] font-medium flex items-center gap-1">
                 <CheckCircle2 size={11} />
@@ -2699,6 +2664,25 @@ export default function App() {
                     )}
                     Save & Recheck
                   </button>
+
+                  <button
+                    onClick={handleDownloadTxt}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 transition-colors shadow-xs"
+                    title="Download current draft text as a .txt file"
+                  >
+                    <Download size={12} />
+                    Download .txt
+                  </button>
+
+                  <button
+                    onClick={handleShareWithDept}
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-[#2563EB] text-white hover:bg-[#1D4ED8] transition-colors shadow-sm"
+                    title="Share this draft with the department forum for employee review & Q&A"
+                  >
+                    <Share2 size={12} />
+                    Send to Forum
+                  </button>
+
 
                   {selectedFinding ? (
                     <span className="flex items-center gap-1.5 text-xs font-medium text-amber-400 ml-1">
@@ -2956,6 +2940,33 @@ export default function App() {
         </>
       )}
 
+      {/* ── Department Forum Phase ── */}
+      {phase === "dept_forum" && (
+        <DepartmentForumView
+          onSelectSharedGR={(grId) => {
+            setSelectedSharedGrId(grId);
+            setPhase("shared_detail");
+          }}
+          onGoToEditor={() => setPhase(conflictResult ? "review" : "upload")}
+        />
+      )}
+
+      {/* ── Read-Only Shared GR Inspection Phase ── */}
+      {phase === "shared_detail" && selectedSharedGrId && (
+        <SharedGRDetailView
+          grId={selectedSharedGrId}
+          onBack={() => setPhase("dept_forum")}
+          onDownloadedFinal={() => {
+            showToast("GR Finalized & Exported! Removed from In-Progress Forum.");
+          }}
+        />
+      )}
+
+      {/* ── Admin: PDF Template Editor Phase ── */}
+      {phase === "pdf_template" && (
+        <PdfTemplateEditor />
+      )}
+
       {/* Inspector drawer */}
       <InspectorDrawer
         finding={selectedFinding}
@@ -2977,6 +2988,19 @@ export default function App() {
       {/* Toast */}
       {toast && <Toast message={toast} onDone={() => setToast(null)} />}
 
+      {draftDocumentId && (
+        <VersionHistoryModal
+          draftId={draftDocumentId}
+          isOpen={isHistoryModalOpen}
+          onClose={() => setIsHistoryModalOpen(false)}
+          onSelectVersionText={(text, verNum) => {
+            setEditedDraftText(text);
+            setIsHistoryModalOpen(false);
+            showToast(`Loaded content from Version ${verNum}`);
+          }}
+        />
+      )}
+
       <DraftChatWidget
         draftText={phase === "review" ? editedDraftText : draftText}
         documentKey={`${fileName}::${phase === "review" ? editedDraftText.length : draftText.length}::${(phase === "review" ? editedDraftText : draftText).slice(0, 128)}`}
@@ -2984,3 +3008,12 @@ export default function App() {
     </div>
   );
 }
+
+export default function App() {
+  return (
+    <RoleProvider>
+      <MainAppContent />
+    </RoleProvider>
+  );
+}
+

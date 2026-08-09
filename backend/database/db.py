@@ -151,11 +151,81 @@ class Database:
                 gr_document_id BIGINT REFERENCES gr_documents(id) ON DELETE CASCADE,
                 version_number INT NOT NULL,
                 full_text TEXT NOT NULL,
+                actor VARCHAR(128) DEFAULT 'anonymous',
+                lines_added INT DEFAULT 0,
+                lines_deleted INT DEFAULT 0,
+                chars_added INT DEFAULT 0,
+                chars_deleted INT DEFAULT 0,
+                raw_diff TEXT,
                 created_at TIMESTAMPTZ DEFAULT now(),
                 UNIQUE (gr_document_id, version_number)
             )
             """
         )
+
+        for col_def in [
+            "actor VARCHAR(128) DEFAULT 'anonymous'",
+            "lines_added INT DEFAULT 0",
+            "lines_deleted INT DEFAULT 0",
+            "chars_added INT DEFAULT 0",
+            "chars_deleted INT DEFAULT 0",
+            "raw_diff TEXT",
+        ]:
+            col_name = col_def.split()[0]
+            self.cur.execute(
+                f"ALTER TABLE gr_versions ADD COLUMN IF NOT EXISTS {col_def};"
+            )
+
+        # Department Collaboration Forum Schema Extensions
+        for col_def in [
+            "shared_with_dept BOOLEAN DEFAULT FALSE",
+            "shared_at TIMESTAMPTZ",
+            "shared_by_user VARCHAR(128)",
+            "is_finalized BOOLEAN DEFAULT FALSE",
+        ]:
+            self.cur.execute(
+                f"ALTER TABLE gr_documents ADD COLUMN IF NOT EXISTS {col_def};"
+            )
+
+        self.cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS gr_comments (
+                id BIGSERIAL PRIMARY KEY,
+                gr_document_id BIGINT REFERENCES gr_documents(id) ON DELETE CASCADE,
+                parent_id BIGINT REFERENCES gr_comments(id) ON DELETE CASCADE,
+                user_name VARCHAR(128) NOT NULL,
+                user_role VARCHAR(64) NOT NULL,
+                user_department VARCHAR(128) DEFAULT 'General Administration Dept',
+                comment_type VARCHAR(32) DEFAULT 'question',
+                content TEXT NOT NULL,
+                is_resolved BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+            """
+        )
+
+        self.cur.execute(
+            """
+            ALTER TABLE gr_comments
+            ADD COLUMN IF NOT EXISTS parent_id BIGINT REFERENCES gr_comments(id) ON DELETE CASCADE
+            """
+        )
+
+        self.cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_gr_comments_doc_id
+            ON gr_comments(gr_document_id)
+            """
+        )
+
+        self.cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_gr_comments_parent_id
+            ON gr_comments(parent_id)
+            """
+        )
+
+
 
         self.cur.execute(
             """
@@ -174,7 +244,26 @@ class Database:
             """
         )
 
+        # PDF Template table (single-row, editable by Admin)
+        self.cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS gr_pdf_template (
+                id          SERIAL PRIMARY KEY,
+                department  TEXT DEFAULT 'महाराष्ट्र शासन',
+                header_line TEXT DEFAULT 'उच्च व तंत्र शिक्षण विभाग',
+                footer_text TEXT DEFAULT 'महाराष्ट्राचे राज्यपाल यांच्या आदेशानुसार व नावाने',
+                font_family TEXT DEFAULT 'Noto Sans',
+                margins_pt  INTEGER DEFAULT 72,
+                logo_base64 TEXT,
+                updated_at  TIMESTAMPTZ DEFAULT now()
+            )
+            """
+        )
+        # Seed a default row if none exists
+        self.cur.execute("INSERT INTO gr_pdf_template DEFAULT VALUES ON CONFLICT DO NOTHING")
+
         self.conn.commit()
+
 
 
     def insert_document(self, metadata, commit=True):
@@ -636,24 +725,34 @@ class Database:
         full_text: str,
         *,
         subject_mr: str | None = None,
+        actor: str = "anonymous",
         commit: bool = True,
     ) -> int:
         """Insert a new editable draft row and initial version 1."""
+        clean_text = "\n".join(
+            line.rstrip()
+            for line in (full_text or "").replace("\r\n", "\n").replace("\r", "\n").splitlines()
+        ).strip()
         self.cur.execute(
             """
             INSERT INTO gr_documents (filename, subject_mr, ocr_text, status)
             VALUES (%s, %s, %s, 'draft')
             RETURNING id
             """,
-            (filename, subject_mr, full_text),
+            (filename, subject_mr, clean_text),
         )
         doc_id = int(self.cur.fetchone()[0])
+        lines_count = len(clean_text.splitlines()) if clean_text else 0
+        chars_count = len(clean_text) if clean_text else 0
         self.cur.execute(
             """
-            INSERT INTO gr_versions (gr_document_id, version_number, full_text)
-            VALUES (%s, 1, %s)
+            INSERT INTO gr_versions (
+                gr_document_id, version_number, full_text, actor,
+                lines_added, lines_deleted, chars_added, chars_deleted, raw_diff
+            )
+            VALUES (%s, 1, %s, %s, %s, 0, %s, 0, NULL)
             """,
-            (doc_id, full_text),
+            (doc_id, clean_text, actor or "anonymous", lines_count, chars_count),
         )
         if commit:
             self.conn.commit()
@@ -683,6 +782,9 @@ class Database:
             return None
         cols = [desc[0] for desc in self.cur.description]
         return dict(zip(cols, row))
+
+    get_gr_document = get_draft_document
+
 
     def get_latest_version_text(self, gr_document_id: int) -> str | None:
         self.cur.execute(
@@ -715,17 +817,72 @@ class Database:
         version_number: int,
         full_text: str,
         *,
+        actor: str = "anonymous",
+        lines_added: int = 0,
+        lines_deleted: int = 0,
+        chars_added: int = 0,
+        chars_deleted: int = 0,
+        raw_diff: str | None = None,
         commit: bool = False,
     ) -> None:
         self.cur.execute(
             """
-            INSERT INTO gr_versions (gr_document_id, version_number, full_text)
-            VALUES (%s, %s, %s)
+            INSERT INTO gr_versions (
+                gr_document_id, version_number, full_text, actor,
+                lines_added, lines_deleted, chars_added, chars_deleted, raw_diff
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (gr_document_id, version_number, full_text),
+            (
+                gr_document_id,
+                version_number,
+                full_text,
+                actor or "anonymous",
+                lines_added,
+                lines_deleted,
+                chars_added,
+                chars_deleted,
+                raw_diff,
+            ),
         )
         if commit:
             self.conn.commit()
+
+    def get_gr_versions_history(self, gr_document_id: int) -> list[dict]:
+        """Fetch all version history rows for a draft document with GitHub-style diff metrics."""
+        self.cur.execute(
+            """
+            SELECT id, gr_document_id, version_number, full_text, actor,
+                   lines_added, lines_deleted, chars_added, chars_deleted, raw_diff, created_at
+            FROM gr_versions
+            WHERE gr_document_id = %s
+            ORDER BY version_number DESC
+            """,
+            (gr_document_id,),
+        )
+        rows = self.cur.fetchall()
+        cols = [desc[0] for desc in self.cur.description]
+        return [dict(zip(cols, row)) for row in rows]
+
+    get_gr_versions = get_gr_versions_history
+
+
+    def get_gr_version_by_number(self, gr_document_id: int, version_number: int) -> dict | None:
+        """Fetch details of a specific version number."""
+        self.cur.execute(
+            """
+            SELECT id, gr_document_id, version_number, full_text, actor,
+                   lines_added, lines_deleted, chars_added, chars_deleted, raw_diff, created_at
+            FROM gr_versions
+            WHERE gr_document_id = %s AND version_number = %s
+            """,
+            (gr_document_id, version_number),
+        )
+        row = self.cur.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in self.cur.description]
+        return dict(zip(cols, row))
 
     def update_draft_text_and_status(
         self,
@@ -746,8 +903,210 @@ class Database:
         if commit:
             self.conn.commit()
 
+    def share_draft_with_dept(self, gr_document_id: int, user_name: str = "Drafting Officer") -> None:
+        self.cur.execute(
+            """
+            UPDATE gr_documents
+            SET shared_with_dept = TRUE, shared_at = now(), shared_by_user = %s
+            WHERE id = %s
+            """,
+            (user_name, gr_document_id),
+        )
+        self.conn.commit()
+
+    def unshare_draft_with_dept(self, gr_document_id: int) -> None:
+        self.cur.execute(
+            """
+            UPDATE gr_documents
+            SET shared_with_dept = FALSE
+            WHERE id = %s
+            """,
+            (gr_document_id,),
+        )
+        self.conn.commit()
+
+    def finalize_draft(self, gr_document_id: int) -> None:
+        self.cur.execute(
+            """
+            UPDATE gr_documents
+            SET is_finalized = TRUE, shared_with_dept = FALSE, status = 'finalized'
+            WHERE id = %s
+            """,
+            (gr_document_id,),
+        )
+        self.conn.commit()
+
+    def get_in_progress_forum_grs(self) -> list[dict]:
+        self.cur.execute(
+            """
+            SELECT d.id, d.filename, d.department, d.gr_number_canonical, d.gr_date AS date, d.status,
+                   d.shared_with_dept, d.shared_at, d.shared_by_user, d.is_finalized,
+                   (SELECT COUNT(*) FROM gr_versions v WHERE v.gr_document_id = d.id) AS version_count,
+                   (SELECT COUNT(*) FROM gr_comments c WHERE c.gr_document_id = d.id) AS comment_count,
+                   (SELECT COUNT(*) FROM gr_comments c WHERE c.gr_document_id = d.id AND c.is_resolved = FALSE) AS unresolved_comment_count,
+                   (SELECT COUNT(*) > 0 FROM gr_comments c
+                    WHERE c.gr_document_id = d.id
+                      AND c.comment_type = 'approval_note'
+                      AND c.parent_id IS NULL
+                   ) AS is_fully_approved
+            FROM gr_documents d
+            WHERE d.shared_with_dept = TRUE AND (d.is_finalized IS FALSE OR d.is_finalized IS NULL)
+            ORDER BY d.shared_at DESC NULLS LAST, d.id DESC
+            """
+        )
+
+        rows = self.cur.fetchall()
+        cols = [desc[0] for desc in self.cur.description]
+        out = []
+        for r in rows:
+            item = dict(zip(cols, r))
+            if item.get('shared_at'):
+                item['shared_at'] = item['shared_at'].isoformat()
+            out.append(item)
+
+        return out
+
+    def add_gr_comment(
+        self,
+        gr_document_id: int,
+        user_name: str,
+        user_role: str,
+        user_department: str,
+        comment_type: str,
+        content: str,
+        parent_id: Optional[int] = None,
+    ) -> dict:
+        self.cur.execute(
+            """
+            INSERT INTO gr_comments (gr_document_id, parent_id, user_name, user_role, user_department, comment_type, content)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, gr_document_id, parent_id, user_name, user_role, user_department, comment_type, content, is_resolved, created_at
+            """,
+            (gr_document_id, parent_id, user_name, user_role, user_department, comment_type, content),
+        )
+        row = self.cur.fetchone()
+        self.conn.commit()
+        cols = [desc[0] for desc in self.cur.description]
+        res = dict(zip(cols, row))
+        if res.get('created_at'):
+            res['created_at'] = res['created_at'].isoformat()
+        return res
+
+    def get_gr_comments(self, gr_document_id: int) -> list[dict]:
+        self.cur.execute(
+            """
+            SELECT id, gr_document_id, parent_id, user_name, user_role, user_department, comment_type, content, is_resolved, created_at
+            FROM gr_comments
+            WHERE gr_document_id = %s
+            ORDER BY created_at ASC
+            """,
+            (gr_document_id,),
+        )
+        rows = self.cur.fetchall()
+        cols = [desc[0] for desc in self.cur.description]
+        out = []
+        for r in rows:
+            d = dict(zip(cols, r))
+            if d.get('created_at'):
+                d['created_at'] = d['created_at'].isoformat()
+            out.append(d)
+        return out
+
+
+    def toggle_comment_resolution(self, comment_id: int, is_resolved: bool) -> None:
+        self.cur.execute(
+            """
+            UPDATE gr_comments
+            SET is_resolved = %s
+            WHERE id = %s
+            """,
+            (is_resolved, comment_id),
+        )
+        self.conn.commit()
+
     def close(self):
         self.cur.close()
         self.conn.close()
 
+    # ─── PDF Template ─────────────────────────────────────────────────────────
 
+    def get_pdf_template(self) -> dict:
+        """Fetch the single editable PDF letterhead template row."""
+        self.cur.execute(
+            """
+            SELECT id, department, header_line, footer_text, font_family, margins_pt, logo_base64, updated_at
+            FROM gr_pdf_template
+            ORDER BY id ASC
+            LIMIT 1
+            """
+        )
+        row = self.cur.fetchone()
+        if not row:
+            return {}
+        cols = [desc[0] for desc in self.cur.description]
+        result = dict(zip(cols, row))
+        if result.get("updated_at"):
+            result["updated_at"] = result["updated_at"].isoformat()
+        return result
+
+    def upsert_pdf_template(self, fields: dict) -> dict:
+        """Update the PDF template. Creates one if it doesn't exist."""
+        allowed = {"department", "header_line", "footer_text", "font_family", "margins_pt", "logo_base64"}
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return self.get_pdf_template()
+        set_clause = ", ".join(f"{k} = %s" for k in updates)
+        values = list(updates.values())
+        self.cur.execute(
+            f"""
+            UPDATE gr_pdf_template
+            SET {set_clause}, updated_at = now()
+            WHERE id = (SELECT id FROM gr_pdf_template ORDER BY id ASC LIMIT 1)
+            """,
+            values,
+        )
+        if self.cur.rowcount == 0:
+            self.cur.execute("INSERT INTO gr_pdf_template DEFAULT VALUES")
+        self.conn.commit()
+        return self.get_pdf_template()
+
+    # ─── Approval Gate ────────────────────────────────────────────────────────
+
+    def get_approval_notes(self, gr_document_id: int) -> list[dict]:
+        """Return all top-level approval_note comments for a GR."""
+        self.cur.execute(
+            """
+            SELECT id, user_name, user_role, user_department, content, created_at
+            FROM gr_comments
+            WHERE gr_document_id = %s
+              AND comment_type = 'approval_note'
+              AND parent_id IS NULL
+            ORDER BY created_at ASC
+            """,
+            (gr_document_id,),
+        )
+        rows = self.cur.fetchall()
+        cols = [desc[0] for desc in self.cur.description]
+        out = []
+        for r in rows:
+            d = dict(zip(cols, r))
+            if d.get("created_at"):
+                d["created_at"] = d["created_at"].isoformat()
+            out.append(d)
+        return out
+
+    def is_fully_approved(self, gr_document_id: int) -> bool:
+        """
+        A GR is fully approved when at least one top-level approval_note exists.
+        """
+        self.cur.execute(
+            """
+            SELECT COUNT(*) FROM gr_comments
+            WHERE gr_document_id = %s
+              AND comment_type = 'approval_note'
+              AND parent_id IS NULL
+            """,
+            (gr_document_id,),
+        )
+        count = self.cur.fetchone()[0]
+        return int(count) >= 1

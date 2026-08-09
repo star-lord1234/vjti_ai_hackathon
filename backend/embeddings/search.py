@@ -15,6 +15,8 @@ load_dotenv(ROOT / ".env")
 from database.db import Database
 from embeddings.embed import get_model
 
+from functools import lru_cache
+
 DEFAULT_MIN_SCORE = float(os.getenv("SEMANTIC_MIN_SCORE", "0.35"))
 DEFAULT_DRAFT_SEGMENT_CHARS = int(os.getenv("DRAFT_QUERY_SEGMENT_CHARS", "600"))
 DEFAULT_MAX_DRAFT_SEGMENTS = int(os.getenv("DRAFT_QUERY_MAX_SEGMENTS", "5"))
@@ -24,8 +26,9 @@ def get_min_score() -> float:
     return float(os.getenv("SEMANTIC_MIN_SCORE", str(DEFAULT_MIN_SCORE)))
 
 
+@lru_cache(maxsize=512)
 def encode_query(text: str) -> str:
-    """Encode a query string to a pgvector literal."""
+    """Encode a query string to a pgvector literal (cached in memory)."""
     model = get_model()
     query_embedding = model.encode(
         text.strip(), show_progress_bar=False, normalize_embeddings=True

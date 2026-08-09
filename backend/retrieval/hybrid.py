@@ -24,6 +24,23 @@ from graph.neo4j_query import Neo4jReader
 from retrieval.models import GraphExpansionResult, HybridSearchMeta
 
 
+import hashlib
+import time
+
+_RETRIEVAL_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]], HybridSearchMeta]] = {}
+CACHE_TTL_SECONDS = 300
+MAX_CACHE_SIZE = 64
+
+
+def _cache_key(query: Union[str, List[str]], top_k: int, hops: int, max_results: int) -> str:
+    if isinstance(query, list):
+        q_str = "||".join(sorted(q.strip() for q in query if q and q.strip()))
+    else:
+        q_str = str(query).strip()
+    raw = f"{q_str}::k={top_k}::h={hops}::m={max_results}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def _collect_seed_results(
     query: Union[str, List[str]],
     top_k: int,
@@ -63,6 +80,15 @@ def hybrid_search(
         if return_meta:
             return [], meta
         return []
+
+    ckey = _cache_key(query, top_k, hops, max_results)
+    now = time.time()
+    if ckey in _RETRIEVAL_CACHE:
+        ts, cached_res, cached_meta = _RETRIEVAL_CACHE[ckey]
+        if now - ts < CACHE_TTL_SECONDS:
+            if return_meta:
+                return cached_res, cached_meta
+            return cached_res
 
     # Step 1: Semantic vector search for top_k seeds
     seed_results = _collect_seed_results(query, top_k=top_k, db=db)
@@ -183,6 +209,10 @@ def hybrid_search(
         results.append(row)
 
     meta.total_results = len(results)
+    if len(_RETRIEVAL_CACHE) >= MAX_CACHE_SIZE:
+        _RETRIEVAL_CACHE.clear()
+    _RETRIEVAL_CACHE[ckey] = (now, results, meta)
+
     if return_meta:
         return results, meta
     return results

@@ -133,10 +133,10 @@ function findingFromPair(
 ): Finding {
   const grLabel = pair.gr_label?.replace(/^\[|\]$/g, "") || `GR ${idx + 1}`;
 
-  // Prefer official GR number for display; fall back to canonical code only as last resort
+  // Prefer normalized (human-readable), then original, then canonical as last resort
   const displayGrNumber =
-    pair.gr_number_original ||
     pair.gr_number_normalized ||
+    pair.gr_number_original ||
     pair.gr_number_canonical ||
     undefined;
 
@@ -153,16 +153,17 @@ function findingFromPair(
     pair.recommendation ||
     `Insufficient evidence — review ${grLabel} for conflicting provisions before drafting.`;
 
+  const draftClauseText = pair.draft_clause || pair.relevance_note || "Conflict detected";
   return {
     id: `f-${idx + 1}`,
     severity,
     clauseNumber: grLabel,
-    summary: pair.draft_clause,
-    matched_text: pair.draft_clause,
-    matchedText: pair.draft_clause,
-    draftExcerpt: pair.draft_proposes || pair.draft_clause,
-    corpusExcerpt: pair.existing_gr_provides || pair.corpus_excerpt,
-    corpusGrLabel: pair.gr_label,
+    summary: draftClauseText,
+    matched_text: draftClauseText,
+    matchedText: draftClauseText,
+    draftExcerpt: pair.draft_proposes || draftClauseText,
+    corpusExcerpt: pair.existing_gr_provides || pair.corpus_excerpt || "",
+    corpusGrLabel: pair.gr_label || "",
     corpusGrNumber: displayGrNumber,
     analysis: perPairAnalysis,
     recommendation: perPairRecommendation,
@@ -196,7 +197,9 @@ export function mapConflictFindingToFindings(
     // Deduplicate pairs that share the same (draft_clause, gr_label) key
     const seen = new Set<string>();
     const dedupedPairs = pairs.filter((pair) => {
-      const key = `${pair.draft_clause.slice(0, 120)}::${pair.gr_label}`;
+      const clauseStr = pair.draft_clause || pair.relevance_note || "";
+      const labelStr = pair.gr_label || "";
+      const key = `${clauseStr.slice(0, 120)}::${labelStr}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -227,10 +230,10 @@ export function mapConflictFindingToFindings(
       const clauseLabel =
         matchedGr?.label?.replace(/^\[|\]$/g, "") || `Clause ${idx + 1}`;
 
-      // Prefer official GR number for display
+      // Prefer normalized (human-readable), then original, then canonical
       const displayGrNumber =
-        (matchedGr as any)?.gr_number_original ||
         (matchedGr as any)?.gr_number_normalized ||
+        (matchedGr as any)?.gr_number_original ||
         matchedGr?.gr_number_canonical ||
         undefined;
 
@@ -282,10 +285,10 @@ export function mapConflictFindingToFindings(
 
   if (grs.length > 0) {
     return grs.map((gr, idx) => {
-      // Prefer official GR number for display
+      // Prefer normalized (human-readable), then original, then canonical
       const displayGrNumber =
-        (gr as any).gr_number_original ||
         (gr as any).gr_number_normalized ||
+        (gr as any).gr_number_original ||
         gr.gr_number_canonical ||
         undefined;
 

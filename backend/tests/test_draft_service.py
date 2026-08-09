@@ -94,3 +94,20 @@ def test_has_high_severity_clear_when_no_issues():
         glossary_check=glossary,
         conflict_result=ConflictFinding(conflicting=False, explanation="ok"),
     )
+
+
+def test_compute_diff_stats():
+    from services.draft import compute_diff_stats
+
+    prev_text = "Line 1: Hello\nLine 2: World"
+    curr_text = "Line 1: Hello\nLine 2: World Updated\nLine 3: Extra"
+
+    stats = compute_diff_stats(prev_text, curr_text)
+    assert stats["lines_added"] == 2
+    assert stats["lines_deleted"] == 1
+    assert stats["chars_added"] > 0
+    assert stats["chars_deleted"] > 0
+    assert "-Line 2: World" in stats["raw_diff"]
+    assert "+Line 2: World Updated" in stats["raw_diff"]
+    assert "+Line 3: Extra" in stats["raw_diff"]
+

@@ -20,8 +20,8 @@ def clean_json_text(text: str) -> str:
 
 def extract_json_object(text: str) -> Dict[str, Any]:
     """
-    Parse JSON from an LLM response, tolerating markdown fences or leading prose.
-    Raises json.JSONDecodeError when no object can be recovered.
+    Parse JSON from an LLM response, tolerating markdown fences, trailing commas,
+    missing object delimiters, or unescaped linebreaks.
     """
     cleaned = clean_json_text(text)
     if cleaned:
@@ -32,8 +32,29 @@ def extract_json_object(text: str) -> Dict[str, Any]:
         except json.JSONDecodeError:
             pass
 
+    # Extract JSON string candidate block
     match = re.search(r"\{[\s\S]*\}", text)
-    if match:
-        return json.loads(match.group(0))
+    raw = match.group(0) if match else cleaned
+
+    # Apply sequential syntax repairs for common LLM generation mistakes
+    repairs = [
+        raw,
+        # Remove trailing commas before closing braces/brackets
+        re.sub(r",\s*([\}\]])", r"\1", raw),
+        # Add missing commas between adjacent objects: } { -> }, {
+        re.sub(r"\}\s*\{", "},{", re.sub(r",\s*([\}\]])", r"\1", raw)),
+        # Add missing commas between newlines: " \n "key" -> ", \n "key"
+        re.sub(r'("\s*)\n(\s*")', r'\1,\n\2', re.sub(r",\s*([\}\]])", r"\1", raw)),
+    ]
+
+    for candidate in repairs:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            continue
 
     raise json.JSONDecodeError("Expecting value", text, 0)
+
+
